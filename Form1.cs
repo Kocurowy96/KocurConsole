@@ -491,13 +491,59 @@ namespace KocurConsole
         private void AutoCompleteCommand()
         {
             string input = GetCurrentInput().TrimStart();
-            string[] parts = input.Split(' ');
-            if (parts.Length > 1) return; // Don't autocomplete arguments
+            string[] parts = input.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
 
-            string partial = parts[0].ToLower();
-            if (string.IsNullOrEmpty(partial)) return;
+            if (parts.Length == 0) return;
 
-            var matches = builtInCommands.Where(c => c.StartsWith(partial)).ToList();
+            // === Sub-command completion (second word) ===
+            if (parts.Length >= 2)
+            {
+                string cmd = parts[0].ToLower();
+                string partial = parts[parts.Length - 1].ToLower();
+                string[] subCommands = null;
+
+                switch (cmd)
+                {
+                    case "settings":
+                        subCommands = new[] { "set", "reset", "theme", "font", "fontSize", "wordWrap", "timestamps", "autoScroll", "shell", "timeout" };
+                        break;
+                    case "theme":
+                        subCommands = ThemeManager.GetThemeNames().Concat(new[] { "list" }).ToArray();
+                        break;
+                    case "history":
+                        subCommands = new[] { "clear" };
+                        break;
+                    case "settings set":
+                        subCommands = new[] { "theme", "font", "fontSize", "wordWrap", "timestamps", "autoScroll", "shell", "timeout" };
+                        break;
+                }
+
+                if (subCommands != null)
+                {
+                    var subMatches = subCommands.Where(s => s.StartsWith(partial, StringComparison.OrdinalIgnoreCase)).ToList();
+                    if (subMatches.Count == 1)
+                    {
+                        // Replace last word with the match
+                        string prefix = string.Join(" ", parts.Take(parts.Length - 1));
+                        SetCurrentInput(prefix + " " + subMatches[0] + " ");
+                    }
+                    else if (subMatches.Count > 1)
+                    {
+                        string savedInput = GetCurrentInput();
+                        AppendConsoleText("\n  " + string.Join("  ", subMatches) + "\n", ThemeManager.Current.InfoColor);
+                        ShowPrompt();
+                        richTextBoxConsoleOutput.SelectionColor = ThemeManager.Current.TextColor;
+                        richTextBoxConsoleOutput.AppendText(savedInput);
+                        richTextBoxConsoleOutput.SelectionStart = richTextBoxConsoleOutput.TextLength;
+                    }
+                }
+                return;
+            }
+
+            // === Command completion (first word) ===
+            string partialCmd = parts[0].ToLower();
+
+            var matches = builtInCommands.Where(c => c.StartsWith(partialCmd)).ToList();
             if (matches.Count == 1)
             {
                 SetCurrentInput(matches[0] + " ");
@@ -507,7 +553,6 @@ namespace KocurConsole
                 string savedInput = GetCurrentInput();
                 AppendConsoleText("\n  " + string.Join("  ", matches) + "\n", ThemeManager.Current.InfoColor);
                 ShowPrompt();
-                // Restore the partial input
                 richTextBoxConsoleOutput.SelectionColor = ThemeManager.Current.TextColor;
                 richTextBoxConsoleOutput.AppendText(savedInput);
                 richTextBoxConsoleOutput.SelectionStart = richTextBoxConsoleOutput.TextLength;
