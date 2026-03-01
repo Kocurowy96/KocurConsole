@@ -12,13 +12,15 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Diagnostics;
 using System.Management;
+using System.Net;
+using System.Security.Cryptography;
 
 namespace KocurConsole
 {
     public partial class Form1 : Form
     {
         public string terminalName = "KocurConsole Terminal";
-        public string terminalVersion = "1.0.0";
+        public string terminalVersion = "1.0.1";
 
         // Command history
         private List<string> commandHistory = new List<string>();
@@ -39,11 +41,15 @@ namespace KocurConsole
         // All built-in command names (for autocomplete)
         private readonly string[] builtInCommands = new string[]
         {
-            "help", "clear", "cls", "fastfetch", "systeminfo", "whoami", "date",
+            "help", "clear", "cls", "fastfetch", "neofetch", "systeminfo", "whoami", "date",
             "echo", "exit", "quit", "ls", "dir", "cd", "pwd", "mkdir", "rmdir",
             "rm", "del", "cp", "copy", "mv", "move", "cat", "type", "touch",
             "hostname", "ping", "history", "theme", "settings", "title", "color",
-            "uptime", "env", "calc", "tree"
+            "uptime", "env", "calc", "tree",
+            "find", "grep", "head", "tail", "wc", "size", "md5", "sha256",
+            "ip", "dns", "wget",
+            "ps", "tasklist", "kill",
+            "open", "start", "base64", "random", "about", "clipboard"
         };
 
         // P/Invoke for dark scrollbar & title bar
@@ -505,13 +511,16 @@ namespace KocurConsole
                 switch (cmd)
                 {
                     case "settings":
-                        subCommands = new[] { "set", "reset", "theme", "font", "fontSize", "wordWrap", "timestamps", "autoScroll", "shell", "timeout" };
+                        subCommands = new[] { "set", "reset", "gui", "theme", "font", "fontSize", "wordWrap", "timestamps", "autoScroll", "shell", "timeout" };
                         break;
                     case "theme":
                         subCommands = ThemeManager.GetThemeNames().Concat(new[] { "list" }).ToArray();
                         break;
                     case "history":
                         subCommands = new[] { "clear" };
+                        break;
+                    case "base64":
+                        subCommands = new[] { "encode", "decode" };
                         break;
                     case "settings set":
                         subCommands = new[] { "theme", "font", "fontSize", "wordWrap", "timestamps", "autoScroll", "shell", "timeout" };
@@ -738,6 +747,75 @@ namespace KocurConsole
                     AppendConsoleText("Current theme: " + ThemeManager.Current.Name + "\n", ThemeManager.Current.InfoColor);
                     break;
 
+                // ── File Search & Analysis ──
+                case "find":
+                    RunAsync(() => CmdFind(args));
+                    return;
+                case "grep":
+                    RunAsync(() => CmdGrep(args));
+                    return;
+                case "head":
+                    CmdHead(args);
+                    break;
+                case "tail":
+                    CmdTail(args);
+                    break;
+                case "wc":
+                    CmdWc(args);
+                    break;
+                case "size":
+                    RunAsync(() => CmdSize(args));
+                    return;
+                case "md5":
+                    RunAsync(() => CmdMd5(args));
+                    return;
+                case "sha256":
+                    RunAsync(() => CmdSha256(args));
+                    return;
+
+                // ── Network (extended) ──
+                case "ip":
+                    CmdIp();
+                    break;
+                case "dns":
+                    RunAsync(() => CmdDns(args));
+                    return;
+                case "wget":
+                    RunAsync(() => CmdWget(args));
+                    return;
+
+                // ── Processes ──
+                case "ps":
+                case "tasklist":
+                    RunAsync(() => CmdPs());
+                    return;
+                case "kill":
+                    CmdKill(args);
+                    break;
+
+                // ── Extended Utility ──
+                case "open":
+                    CmdOpen(args);
+                    break;
+                case "start":
+                    CmdStart(args);
+                    break;
+                case "base64":
+                    CmdBase64(args);
+                    break;
+                case "random":
+                    CmdRandom(args);
+                    break;
+                case "about":
+                    CmdAbout();
+                    break;
+                case "neofetch":
+                    RunAsync(() => ShowFastFetch());
+                    return;
+                case "clipboard":
+                    CmdClipboard();
+                    break;
+
                 // ── CMD/PowerShell Fallback ──
                 default:
                     RunExternalCommand(command);
@@ -763,6 +841,7 @@ namespace KocurConsole
             AppendConsoleText("  echo <text>       Echo text\n", t.TextColor);
             AppendConsoleText("  title <text>      Change window title\n", t.TextColor);
             AppendConsoleText("  history           Show command history\n", t.TextColor);
+            AppendConsoleText("  about             About KocurConsole\n", t.TextColor);
             AppendConsoleText("  exit / quit       Close the application\n\n", t.TextColor);
 
             AppendConsoleText(" System:\n", t.AccentColor);
@@ -771,7 +850,9 @@ namespace KocurConsole
             AppendConsoleText("  whoami            Current user\n", t.TextColor);
             AppendConsoleText("  hostname          Computer name\n", t.TextColor);
             AppendConsoleText("  date              Date & time\n", t.TextColor);
-            AppendConsoleText("  uptime            System uptime\n\n", t.TextColor);
+            AppendConsoleText("  uptime            System uptime\n", t.TextColor);
+            AppendConsoleText("  ps / tasklist     List processes (top 30)\n", t.TextColor);
+            AppendConsoleText("  kill <pid>        Kill a process\n\n", t.TextColor);
 
             AppendConsoleText(" File System:\n", t.AccentColor);
             AppendConsoleText("  ls / dir          List directory\n", t.TextColor);
@@ -784,21 +865,38 @@ namespace KocurConsole
             AppendConsoleText("  mv / move <s> <d> Move / rename file\n", t.TextColor);
             AppendConsoleText("  cat / type <file> Show file contents\n", t.TextColor);
             AppendConsoleText("  touch <file>      Create empty file\n", t.TextColor);
-            AppendConsoleText("  tree              Directory tree\n\n", t.TextColor);
+            AppendConsoleText("  tree              Directory tree\n", t.TextColor);
+            AppendConsoleText("  find <pattern>    Search files by name\n", t.TextColor);
+            AppendConsoleText("  grep <pat> <file> Search text in file\n", t.TextColor);
+            AppendConsoleText("  head <file> [n]   First N lines (def 10)\n", t.TextColor);
+            AppendConsoleText("  tail <file> [n]   Last N lines (def 10)\n", t.TextColor);
+            AppendConsoleText("  wc <file>         Word/line/char count\n", t.TextColor);
+            AppendConsoleText("  size <path>       File/directory size\n", t.TextColor);
+            AppendConsoleText("  md5 <file>        MD5 hash\n", t.TextColor);
+            AppendConsoleText("  sha256 <file>     SHA256 hash\n\n", t.TextColor);
 
             AppendConsoleText(" Network:\n", t.AccentColor);
-            AppendConsoleText("  ping <host>       Ping host (4 packets)\n\n", t.TextColor);
+            AppendConsoleText("  ping <host>       Ping host (4 packets)\n", t.TextColor);
+            AppendConsoleText("  ip                Show IP addresses\n", t.TextColor);
+            AppendConsoleText("  dns <host>        DNS lookup\n", t.TextColor);
+            AppendConsoleText("  wget <url> [file] Download file\n\n", t.TextColor);
 
             AppendConsoleText(" Utility:\n", t.AccentColor);
             AppendConsoleText("  env [name]        Environment variables\n", t.TextColor);
-            AppendConsoleText("  calc <expr>       Calculator\n\n", t.TextColor);
+            AppendConsoleText("  calc <expr>       Calculator\n", t.TextColor);
+            AppendConsoleText("  base64 <enc|dec>  Base64 encode/decode\n", t.TextColor);
+            AppendConsoleText("  random [min] [max] Random number\n", t.TextColor);
+            AppendConsoleText("  clipboard         Show clipboard text\n", t.TextColor);
+            AppendConsoleText("  open [path]       Open in Explorer\n", t.TextColor);
+            AppendConsoleText("  start <program>   Launch program\n\n", t.TextColor);
 
-            AppendConsoleText(" Themes:\n", t.AccentColor);
+            AppendConsoleText(" Themes & Settings:\n", t.AccentColor);
             AppendConsoleText("  theme list        List themes\n", t.TextColor);
             AppendConsoleText("  theme <name>      Apply theme\n", t.TextColor);
             AppendConsoleText("  settings          Show settings\n", t.TextColor);
             AppendConsoleText("  settings set <k> <v>  Change setting\n", t.TextColor);
-            AppendConsoleText("  settings reset    Reset defaults\n\n", t.TextColor);
+            AppendConsoleText("  settings reset    Reset defaults\n", t.TextColor);
+            AppendConsoleText("  settings gui      Settings window\n\n", t.TextColor);
 
             AppendConsoleText(" Unknown commands -> " + SettingsManager.Current.Shell + ".exe\n", t.WarningColor);
             AppendConsoleText(" Tab=autocomplete  Ctrl+C=cancel  Ctrl+L=clear  Esc=clear input\n\n", t.WarningColor);
@@ -1203,6 +1301,12 @@ namespace KocurConsole
                 return;
             }
 
+            if (args[0].ToLower() == "gui")
+            {
+                OpenSettingsGui();
+                return;
+            }
+
             if (args[0].ToLower() == "reset")
             {
                 SettingsManager.Reset();
@@ -1238,7 +1342,29 @@ namespace KocurConsole
                 return;
             }
 
-            AppendConsoleText("Usage: settings | settings set <key> <value> | settings reset\n", t.WarningColor);
+            AppendConsoleText("Usage: settings | settings set <key> <value> | settings reset | settings gui\n", t.WarningColor);
+        }
+
+        private void OpenSettingsGui()
+        {
+            if (this.InvokeRequired)
+            {
+                this.Invoke(new Action(() => OpenSettingsGui()));
+                return;
+            }
+
+            using (SettingsForm sf = new SettingsForm())
+            {
+                if (sf.ShowDialog(this) == DialogResult.OK)
+                {
+                    sf.ApplySettings();
+                    ApplyTheme();
+                    ApplyFontSettings();
+                    ApplyDarkMode();
+                    richTextBoxConsoleOutput.WordWrap = SettingsManager.Current.WordWrap;
+                    AppendConsoleText("Settings saved.\n", ThemeManager.Current.InfoColor);
+                }
+            }
         }
 
         #endregion
@@ -1397,6 +1523,424 @@ namespace KocurConsole
             }
             catch { }
             return "Unknown";
+        }
+
+        #endregion
+
+        #region File Search & Analysis Commands
+
+        private void CmdFind(string[] args)
+        {
+            if (args.Length == 0) { AppendConsoleText("Usage: find <pattern>\n", ThemeManager.Current.WarningColor); return; }
+            string pattern = args[0];
+            string searchPath = args.Length > 1 ? ResolvePath(args[1]) : currentDirectory;
+            ConsoleTheme t = ThemeManager.Current;
+
+            AppendConsoleText("\n Searching for \"" + pattern + "\" in " + searchPath + "...\n\n", t.InfoColor);
+            int count = 0;
+            try
+            {
+                foreach (string file in Directory.EnumerateFiles(searchPath, "*" + pattern + "*", SearchOption.AllDirectories))
+                {
+                    if (cancelRequested) break;
+                    if (count >= 200) { AppendConsoleText("  [... truncated at 200 results]\n", t.WarningColor); break; }
+                    AppendConsoleText("  " + file + "\n", t.TextColor);
+                    count++;
+                }
+                foreach (string dir in Directory.EnumerateDirectories(searchPath, "*" + pattern + "*", SearchOption.AllDirectories))
+                {
+                    if (cancelRequested) break;
+                    if (count >= 200) break;
+                    AppendConsoleText("  " + dir + "\\\n", t.AccentColor);
+                    count++;
+                }
+            }
+            catch (Exception ex) { AppendConsoleText("  Error: " + ex.Message + "\n", t.ErrorColor); }
+            AppendConsoleText("\n  " + count + " result(s) found.\n\n", t.InfoColor);
+        }
+
+        private void CmdGrep(string[] args)
+        {
+            if (args.Length < 2) { AppendConsoleText("Usage: grep <pattern> <file>\n", ThemeManager.Current.WarningColor); return; }
+            string pattern = args[0];
+            string path = ResolvePath(args[1]);
+            ConsoleTheme t = ThemeManager.Current;
+
+            if (!File.Exists(path)) { AppendConsoleText("File not found: " + args[1] + "\n", t.ErrorColor); return; }
+
+            try
+            {
+                string[] lines = File.ReadAllLines(path, Encoding.UTF8);
+                int count = 0;
+                for (int i = 0; i < lines.Length; i++)
+                {
+                    if (cancelRequested) break;
+                    if (lines[i].IndexOf(pattern, StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        AppendConsoleText("  " + (i + 1).ToString().PadLeft(5) + ": ", t.AccentColor);
+                        string line = lines[i];
+                        int idx = line.IndexOf(pattern, StringComparison.OrdinalIgnoreCase);
+                        while (idx >= 0)
+                        {
+                            AppendConsoleText(line.Substring(0, idx), t.TextColor);
+                            AppendConsoleText(line.Substring(idx, pattern.Length), t.WarningColor);
+                            line = line.Substring(idx + pattern.Length);
+                            idx = line.IndexOf(pattern, StringComparison.OrdinalIgnoreCase);
+                        }
+                        AppendConsoleText(line + "\n", t.TextColor);
+                        count++;
+                    }
+                }
+                AppendConsoleText("\n  " + count + " match(es) in " + lines.Length + " lines.\n", t.InfoColor);
+            }
+            catch (Exception ex) { AppendConsoleText("Error: " + ex.Message + "\n", t.ErrorColor); }
+        }
+
+        private void CmdHead(string[] args)
+        {
+            if (args.Length == 0) { AppendConsoleText("Usage: head <file> [n]\n", ThemeManager.Current.WarningColor); return; }
+            string path = ResolvePath(args[0]);
+            int n = 10;
+            if (args.Length > 1) int.TryParse(args[1], out n);
+
+            if (!File.Exists(path)) { AppendConsoleText("File not found: " + args[0] + "\n", ThemeManager.Current.ErrorColor); return; }
+
+            try
+            {
+                string[] lines = File.ReadAllLines(path, Encoding.UTF8);
+                int max = Math.Min(lines.Length, n);
+                for (int i = 0; i < max; i++)
+                    AppendConsoleText(lines[i] + "\n", ThemeManager.Current.TextColor);
+                if (lines.Length > n)
+                    AppendConsoleText("[... " + lines.Length + " total lines]\n", ThemeManager.Current.WarningColor);
+            }
+            catch (Exception ex) { AppendConsoleText("Error: " + ex.Message + "\n", ThemeManager.Current.ErrorColor); }
+        }
+
+        private void CmdTail(string[] args)
+        {
+            if (args.Length == 0) { AppendConsoleText("Usage: tail <file> [n]\n", ThemeManager.Current.WarningColor); return; }
+            string path = ResolvePath(args[0]);
+            int n = 10;
+            if (args.Length > 1) int.TryParse(args[1], out n);
+
+            if (!File.Exists(path)) { AppendConsoleText("File not found: " + args[0] + "\n", ThemeManager.Current.ErrorColor); return; }
+
+            try
+            {
+                string[] lines = File.ReadAllLines(path, Encoding.UTF8);
+                int start = Math.Max(0, lines.Length - n);
+                if (start > 0)
+                    AppendConsoleText("[... showing last " + n + " of " + lines.Length + " lines]\n", ThemeManager.Current.WarningColor);
+                for (int i = start; i < lines.Length; i++)
+                    AppendConsoleText(lines[i] + "\n", ThemeManager.Current.TextColor);
+            }
+            catch (Exception ex) { AppendConsoleText("Error: " + ex.Message + "\n", ThemeManager.Current.ErrorColor); }
+        }
+
+        private void CmdWc(string[] args)
+        {
+            if (args.Length == 0) { AppendConsoleText("Usage: wc <file>\n", ThemeManager.Current.WarningColor); return; }
+            string path = ResolvePath(args[0]);
+            if (!File.Exists(path)) { AppendConsoleText("File not found: " + args[0] + "\n", ThemeManager.Current.ErrorColor); return; }
+
+            try
+            {
+                string content = File.ReadAllText(path, Encoding.UTF8);
+                int lines = content.Split('\n').Length;
+                int words = content.Split(new[] { ' ', '\n', '\r', '\t' }, StringSplitOptions.RemoveEmptyEntries).Length;
+                int chars = content.Length;
+                AppendConsoleText("  Lines: " + lines + "  Words: " + words + "  Chars: " + chars + "\n", ThemeManager.Current.TextColor);
+            }
+            catch (Exception ex) { AppendConsoleText("Error: " + ex.Message + "\n", ThemeManager.Current.ErrorColor); }
+        }
+
+        private void CmdSize(string[] args)
+        {
+            if (args.Length == 0) { AppendConsoleText("Usage: size <path>\n", ThemeManager.Current.WarningColor); return; }
+            string path = ResolvePath(args[0]);
+            try
+            {
+                if (File.Exists(path))
+                {
+                    FileInfo fi = new FileInfo(path);
+                    AppendConsoleText("  " + fi.Name + ": " + FormatFileSize(fi.Length) + "\n", ThemeManager.Current.TextColor);
+                }
+                else if (Directory.Exists(path))
+                {
+                    AppendConsoleText("  Calculating...\n", ThemeManager.Current.InfoColor);
+                    long total = GetDirectorySize(path);
+                    if (!cancelRequested)
+                        AppendConsoleText("  " + Path.GetFileName(path) + ": " + FormatFileSize(total) + "\n", ThemeManager.Current.TextColor);
+                }
+                else { AppendConsoleText("Not found: " + args[0] + "\n", ThemeManager.Current.ErrorColor); }
+            }
+            catch (Exception ex) { AppendConsoleText("Error: " + ex.Message + "\n", ThemeManager.Current.ErrorColor); }
+        }
+
+        private long GetDirectorySize(string path)
+        {
+            long size = 0;
+            try
+            {
+                foreach (string file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
+                {
+                    if (cancelRequested) break;
+                    try { size += new FileInfo(file).Length; } catch { }
+                }
+            }
+            catch { }
+            return size;
+        }
+
+        private void CmdMd5(string[] args)
+        {
+            if (args.Length == 0) { AppendConsoleText("Usage: md5 <file>\n", ThemeManager.Current.WarningColor); return; }
+            string path = ResolvePath(args[0]);
+            if (!File.Exists(path)) { AppendConsoleText("File not found: " + args[0] + "\n", ThemeManager.Current.ErrorColor); return; }
+            try
+            {
+                using (var md5 = MD5.Create())
+                using (var stream = File.OpenRead(path))
+                {
+                    byte[] hash = md5.ComputeHash(stream);
+                    string hex = BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
+                    AppendConsoleText("  MD5: " + hex + "\n", ThemeManager.Current.TextColor);
+                }
+            }
+            catch (Exception ex) { AppendConsoleText("Error: " + ex.Message + "\n", ThemeManager.Current.ErrorColor); }
+        }
+
+        private void CmdSha256(string[] args)
+        {
+            if (args.Length == 0) { AppendConsoleText("Usage: sha256 <file>\n", ThemeManager.Current.WarningColor); return; }
+            string path = ResolvePath(args[0]);
+            if (!File.Exists(path)) { AppendConsoleText("File not found: " + args[0] + "\n", ThemeManager.Current.ErrorColor); return; }
+            try
+            {
+                using (var sha = SHA256.Create())
+                using (var stream = File.OpenRead(path))
+                {
+                    byte[] hash = sha.ComputeHash(stream);
+                    string hex = BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
+                    AppendConsoleText("  SHA256: " + hex + "\n", ThemeManager.Current.TextColor);
+                }
+            }
+            catch (Exception ex) { AppendConsoleText("Error: " + ex.Message + "\n", ThemeManager.Current.ErrorColor); }
+        }
+
+        #endregion
+
+        #region Extended Network Commands
+
+        private void CmdIp()
+        {
+            ConsoleTheme t = ThemeManager.Current;
+            AppendConsoleText("\n  Network Interfaces:\n\n", t.InfoColor);
+            try
+            {
+                foreach (var ni in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (ni.OperationalStatus == OperationalStatus.Up)
+                    {
+                        var props = ni.GetIPProperties();
+                        foreach (var addr in props.UnicastAddresses)
+                        {
+                            if (addr.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork ||
+                                addr.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
+                            {
+                                AppendConsoleText("  " + ni.Name.PadRight(25), t.AccentColor);
+                                AppendConsoleText(addr.Address.ToString() + "\n", t.TextColor);
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex) { AppendConsoleText("Error: " + ex.Message + "\n", t.ErrorColor); }
+            AppendConsoleText("\n", t.TextColor);
+        }
+
+        private void CmdDns(string[] args)
+        {
+            if (args.Length == 0) { AppendConsoleText("Usage: dns <host>\n", ThemeManager.Current.WarningColor); return; }
+            try
+            {
+                var entry = Dns.GetHostEntry(args[0]);
+                AppendConsoleText("  Host: " + entry.HostName + "\n", ThemeManager.Current.AccentColor);
+                foreach (var addr in entry.AddressList)
+                    AppendConsoleText("  IP:   " + addr.ToString() + "\n", ThemeManager.Current.TextColor);
+            }
+            catch (Exception ex) { AppendConsoleText("DNS error: " + ex.Message + "\n", ThemeManager.Current.ErrorColor); }
+        }
+
+        private void CmdWget(string[] args)
+        {
+            if (args.Length == 0) { AppendConsoleText("Usage: wget <url> [filename]\n", ThemeManager.Current.WarningColor); return; }
+            string url = args[0];
+            string filename;
+            if (args.Length > 1)
+            {
+                filename = args[1];
+            }
+            else
+            {
+                try { filename = Path.GetFileName(new Uri(url).LocalPath); }
+                catch { filename = "download"; }
+                if (string.IsNullOrEmpty(filename)) filename = "download";
+            }
+            string savePath = ResolvePath(filename);
+
+            AppendConsoleText("Downloading " + url + "...\n", ThemeManager.Current.InfoColor);
+            try
+            {
+                using (var client = new WebClient())
+                {
+                    client.DownloadFile(url, savePath);
+                }
+                FileInfo fi = new FileInfo(savePath);
+                AppendConsoleText("Saved: " + savePath + " (" + FormatFileSize(fi.Length) + ")\n", ThemeManager.Current.InfoColor);
+            }
+            catch (Exception ex) { AppendConsoleText("Download error: " + ex.Message + "\n", ThemeManager.Current.ErrorColor); }
+        }
+
+        #endregion
+
+        #region Process Commands
+
+        private void CmdPs()
+        {
+            ConsoleTheme t = ThemeManager.Current;
+            AppendConsoleText("\n  " + "PID".PadRight(8) + "Name".PadRight(35) + "Memory".PadLeft(12) + "\n", t.AccentColor);
+            AppendConsoleText("  " + new string('-', 55) + "\n", t.TextColor);
+
+            var processes = Process.GetProcesses().OrderByDescending(p =>
+            {
+                try { return p.WorkingSet64; } catch { return 0L; }
+            }).Take(30);
+
+            foreach (var p in processes)
+            {
+                if (cancelRequested) break;
+                try
+                {
+                    string mem = FormatFileSize(p.WorkingSet64);
+                    AppendConsoleText("  " + p.Id.ToString().PadRight(8) + p.ProcessName.PadRight(35) + mem.PadLeft(12) + "\n", t.TextColor);
+                }
+                catch { }
+            }
+            AppendConsoleText("\n  [Top 30 by memory]\n\n", t.WarningColor);
+        }
+
+        private void CmdKill(string[] args)
+        {
+            if (args.Length == 0) { AppendConsoleText("Usage: kill <pid>\n", ThemeManager.Current.WarningColor); return; }
+            try
+            {
+                int pid = int.Parse(args[0]);
+                Process p = Process.GetProcessById(pid);
+                string name = p.ProcessName;
+                p.Kill();
+                AppendConsoleText("Killed: " + name + " (PID " + pid + ")\n", ThemeManager.Current.InfoColor);
+            }
+            catch (Exception ex) { AppendConsoleText("Error: " + ex.Message + "\n", ThemeManager.Current.ErrorColor); }
+        }
+
+        #endregion
+
+        #region Extended Utility Commands
+
+        private void CmdOpen(string[] args)
+        {
+            string path = args.Length > 0 ? ResolvePath(args[0]) : currentDirectory;
+            try
+            {
+                Process.Start("explorer.exe", path);
+                AppendConsoleText("Opened: " + path + "\n", ThemeManager.Current.InfoColor);
+            }
+            catch (Exception ex) { AppendConsoleText("Error: " + ex.Message + "\n", ThemeManager.Current.ErrorColor); }
+        }
+
+        private void CmdStart(string[] args)
+        {
+            if (args.Length == 0) { AppendConsoleText("Usage: start <program> [args]\n", ThemeManager.Current.WarningColor); return; }
+            try
+            {
+                string program = args[0];
+                string arguments = args.Length > 1 ? string.Join(" ", args.Skip(1)) : "";
+                Process.Start(program, arguments);
+                AppendConsoleText("Started: " + program + "\n", ThemeManager.Current.InfoColor);
+            }
+            catch (Exception ex) { AppendConsoleText("Error: " + ex.Message + "\n", ThemeManager.Current.ErrorColor); }
+        }
+
+        private void CmdBase64(string[] args)
+        {
+            if (args.Length < 2) { AppendConsoleText("Usage: base64 <encode|decode> <text>\n", ThemeManager.Current.WarningColor); return; }
+            string mode = args[0].ToLower();
+            string text = string.Join(" ", args.Skip(1));
+            try
+            {
+                if (mode == "encode" || mode == "enc")
+                {
+                    string encoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(text));
+                    AppendConsoleText(encoded + "\n", ThemeManager.Current.TextColor);
+                }
+                else if (mode == "decode" || mode == "dec")
+                {
+                    string decoded = Encoding.UTF8.GetString(Convert.FromBase64String(text));
+                    AppendConsoleText(decoded + "\n", ThemeManager.Current.TextColor);
+                }
+                else
+                {
+                    AppendConsoleText("Mode must be 'encode' or 'decode'\n", ThemeManager.Current.WarningColor);
+                }
+            }
+            catch (Exception ex) { AppendConsoleText("Error: " + ex.Message + "\n", ThemeManager.Current.ErrorColor); }
+        }
+
+        private void CmdRandom(string[] args)
+        {
+            Random rng = new Random();
+            int min = 0, max = 100;
+            if (args.Length >= 1) int.TryParse(args[0], out min);
+            if (args.Length >= 2) int.TryParse(args[1], out max);
+            AppendConsoleText(rng.Next(min, max + 1).ToString() + "\n", ThemeManager.Current.TextColor);
+        }
+
+        private void CmdAbout()
+        {
+            ConsoleTheme t = ThemeManager.Current;
+            AppendConsoleText("\n", t.TextColor);
+            AppendConsoleText("  ╔══════════════════════════════════════╗\n", t.AccentColor);
+            AppendConsoleText("  ║         KocurConsole Terminal        ║\n", t.AccentColor);
+            AppendConsoleText("  ║           Version " + terminalVersion.PadRight(19) + "║\n", t.AccentColor);
+            AppendConsoleText("  ╠══════════════════════════════════════╣\n", t.AccentColor);
+            AppendConsoleText("  ║  Built with C# / .NET Framework 4.8 ║\n", t.TextColor);
+            AppendConsoleText("  ║  MIT License                        ║\n", t.TextColor);
+            AppendConsoleText("  ╚══════════════════════════════════════╝\n", t.AccentColor);
+            AppendConsoleText("\n", t.TextColor);
+        }
+
+        private void CmdClipboard()
+        {
+            if (this.InvokeRequired)
+            {
+                this.Invoke(new Action(() => CmdClipboard()));
+                return;
+            }
+            try
+            {
+                if (Clipboard.ContainsText())
+                {
+                    string text = Clipboard.GetText();
+                    AppendConsoleText(text + "\n", ThemeManager.Current.TextColor);
+                }
+                else
+                {
+                    AppendConsoleText("[Clipboard is empty or contains non-text data]\n", ThemeManager.Current.WarningColor);
+                }
+            }
+            catch (Exception ex) { AppendConsoleText("Error: " + ex.Message + "\n", ThemeManager.Current.ErrorColor); }
         }
 
         #endregion
