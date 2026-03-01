@@ -49,7 +49,8 @@ namespace KocurConsole
             "find", "grep", "head", "tail", "wc", "size", "md5", "sha256",
             "ip", "dns", "wget",
             "ps", "tasklist", "kill",
-            "open", "start", "base64", "random", "about", "clipboard"
+            "open", "start", "base64", "random", "about", "clipboard",
+            "checkupdate", "update"
         };
 
         // P/Invoke for dark scrollbar & title bar
@@ -816,6 +817,14 @@ namespace KocurConsole
                     CmdClipboard();
                     break;
 
+                // ── Update ──
+                case "checkupdate":
+                    RunAsync(() => CmdCheckUpdate());
+                    return;
+                case "update":
+                    RunAsync(() => CmdUpdate());
+                    return;
+
                 // ── CMD/PowerShell Fallback ──
                 default:
                     RunExternalCommand(command);
@@ -897,6 +906,10 @@ namespace KocurConsole
             AppendConsoleText("  settings set <k> <v>  Change setting\n", t.TextColor);
             AppendConsoleText("  settings reset    Reset defaults\n", t.TextColor);
             AppendConsoleText("  settings gui      Settings window\n\n", t.TextColor);
+
+            AppendConsoleText(" Updates:\n", t.AccentColor);
+            AppendConsoleText("  checkupdate       Check for updates\n", t.TextColor);
+            AppendConsoleText("  update            Download & install update\n\n", t.TextColor);
 
             AppendConsoleText(" Unknown commands -> " + SettingsManager.Current.Shell + ".exe\n", t.WarningColor);
             AppendConsoleText(" Tab=autocomplete  Ctrl+C=cancel  Ctrl+L=clear  Esc=clear input\n\n", t.WarningColor);
@@ -1941,6 +1954,92 @@ namespace KocurConsole
                 }
             }
             catch (Exception ex) { AppendConsoleText("Error: " + ex.Message + "\n", ThemeManager.Current.ErrorColor); }
+        }
+
+        #endregion
+
+        #region Update Commands
+
+        private void CmdCheckUpdate()
+        {
+            ConsoleTheme t = ThemeManager.Current;
+            AppendConsoleText("\n  Checking for updates...\n", t.InfoColor);
+
+            VersionManifest manifest = UpdateHandler.CheckForUpdate();
+            if (manifest == null)
+            {
+                AppendConsoleText("  Could not connect to update server.\n", t.ErrorColor);
+                AppendConsoleText("  Check your internet connection.\n\n", t.TextColor);
+                return;
+            }
+
+            if (UpdateHandler.IsNewerVersion(terminalVersion, manifest.Version))
+            {
+                AppendConsoleText("\n  New version available!\n\n", t.WarningColor);
+                AppendConsoleText("  Current:  v" + terminalVersion + "\n", t.TextColor);
+                AppendConsoleText("  Latest:   v" + manifest.Version + " (" + manifest.ReleaseDate + ")\n", t.AccentColor);
+                AppendConsoleText("  Changes:  " + manifest.Changelog + "\n\n", t.TextColor);
+                AppendConsoleText("  Run 'update' to download and install.\n", t.InfoColor);
+                AppendConsoleText("  Or visit: " + manifest.ReleasePage + "\n\n", t.TextColor);
+            }
+            else
+            {
+                AppendConsoleText("\n  You are up to date! (v" + terminalVersion + ")\n\n", t.InfoColor);
+            }
+        }
+
+        private void CmdUpdate()
+        {
+            ConsoleTheme t = ThemeManager.Current;
+            AppendConsoleText("\n  Checking for updates...\n", t.InfoColor);
+
+            VersionManifest manifest = UpdateHandler.CheckForUpdate();
+            if (manifest == null)
+            {
+                AppendConsoleText("  Could not connect to update server.\n\n", t.ErrorColor);
+                return;
+            }
+
+            if (!UpdateHandler.IsNewerVersion(terminalVersion, manifest.Version))
+            {
+                AppendConsoleText("  Already up to date (v" + terminalVersion + ")\n\n", t.InfoColor);
+                return;
+            }
+
+            AppendConsoleText("  Downloading v" + manifest.Version + "...\n", t.InfoColor);
+
+            string tempPath = UpdateHandler.DownloadUpdate(manifest, progress =>
+            {
+                // Progress callback — we could show a bar but keep it simple
+            });
+
+            if (tempPath == null)
+            {
+                AppendConsoleText("  Download failed.\n", t.ErrorColor);
+                AppendConsoleText("  Try manual download: " + manifest.ReleasePage + "\n\n", t.TextColor);
+                return;
+            }
+
+            AppendConsoleText("  Download complete!\n", t.InfoColor);
+            AppendConsoleText("  Applying update — KocurConsole will restart...\n\n", t.WarningColor);
+
+            // Small delay so user can read the message
+            System.Threading.Thread.Sleep(1500);
+
+            // Apply update (launches batch script and we need to exit)
+            if (this.InvokeRequired)
+            {
+                this.Invoke(new Action(() =>
+                {
+                    UpdateHandler.ApplyUpdate(tempPath);
+                    Application.Exit();
+                }));
+            }
+            else
+            {
+                UpdateHandler.ApplyUpdate(tempPath);
+                Application.Exit();
+            }
         }
 
         #endregion
