@@ -1,7 +1,7 @@
 {
-  "version": "1.0.1",
+  "version": "1.0.2",
   "releaseDate": "2026-03-01",
   "downloadUrl": "https://github.com/Kocurowy96/KocurConsole/releases/latest/download/KocurConsole.exe",
   "releasePage": "https://github.com/Kocurowy96/KocurConsole/releases/latest",
-  "changelog": "v1.0.1: 20+ new commands, settings GUI, 8 themes, cmd/powershell fallback, tab autocomplete"
+  "changelog": "v1.0.2: bookmarks, aliases, stopwatch/timer, session logging, command chaining (&&), output redirection (>), file path autocomplete, curl, df, hash text, write, auto-update check on startup"
 }

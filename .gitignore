@@ -18,7 +18,6 @@ mono_crash.*
 
 # Documentation
 UpdatingProcess.md
-Compiling.md
 
 # Build results
 bin/

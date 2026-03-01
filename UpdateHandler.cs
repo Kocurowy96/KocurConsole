@@ -30,7 +30,7 @@ namespace KocurConsole
 
     public static class UpdateHandler
     {
-        private const string ManifestUrl = "https://raw.githubusercontent.com/Kocurowy96/KocurConsole/main/version_manifest.json";
+        private const string ManifestUrl = "https://raw.githubusercontent.com/Kocurowy96/KocurConsole/master/version_manifest.json";
 
         /// <summary>
         /// Fetch the remote version manifest from GitHub.
@@ -39,6 +39,7 @@ namespace KocurConsole
         {
             try
             {
+                ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
                 using (WebClient client = new WebClient())
                 {
                     client.Headers.Add("User-Agent", "KocurConsole-Updater");
@@ -84,6 +85,7 @@ namespace KocurConsole
         {
             try
             {
+                ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
                 string tempPath = Path.Combine(Path.GetTempPath(), "KocurConsole_update.exe");
 
                 using (WebClient client = new WebClient())

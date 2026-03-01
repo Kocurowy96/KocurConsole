@@ -20,7 +20,7 @@ namespace KocurConsole
     public partial class Form1 : Form
     {
         public string terminalName = "KocurConsole Terminal";
-        public string terminalVersion = "1.0.1";
+        public string terminalVersion = "1.0.2";
 
         // Command history
         private List<string> commandHistory = new List<string>();
@@ -38,6 +38,19 @@ namespace KocurConsole
         private volatile bool cancelRequested = false;
         private int inputStartPosition = 0;
 
+        // Aliases (name -> command)
+        private Dictionary<string, string> aliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        // Bookmarks (name -> path)
+        private Dictionary<string, string> bookmarks = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        // Session logging
+        private StreamWriter logWriter = null;
+        private string logFilePath = null;
+
+        // Stopwatch
+        private Stopwatch activeStopwatch = null;
+
         // All built-in command names (for autocomplete)
         private readonly string[] builtInCommands = new string[]
         {
@@ -50,7 +63,9 @@ namespace KocurConsole
             "ip", "dns", "wget",
             "ps", "tasklist", "kill",
             "open", "start", "base64", "random", "about", "clipboard",
-            "checkupdate", "update"
+            "checkupdate", "update",
+            "bookmark", "alias", "stopwatch", "timer", "log",
+            "hash", "curl", "df", "write"
         };
 
         // P/Invoke for dark scrollbar & title bar
@@ -106,6 +121,23 @@ namespace KocurConsole
             AppendConsoleText(terminalName + " " + terminalVersion + " - Type 'help' for available commands\n\n", ThemeManager.Current.InfoColor);
             ShowPrompt();
             richTextBoxConsoleOutput.Focus();
+
+            // Load aliases and bookmarks from settings
+            LoadAliasesAndBookmarks();
+
+            // Background update check
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    var manifest = UpdateHandler.CheckForUpdate();
+                    if (manifest != null && UpdateHandler.IsNewerVersion(terminalVersion, manifest.Version))
+                    {
+                        AppendConsoleText("\n  [!] New version v" + manifest.Version + " available! Type 'update' to install.\n\n", ThemeManager.Current.WarningColor);
+                    }
+                }
+                catch { }
+            });
         }
 
         #region Theme & Settings Application
@@ -523,8 +555,20 @@ namespace KocurConsole
                     case "base64":
                         subCommands = new[] { "encode", "decode" };
                         break;
-                    case "settings set":
-                        subCommands = new[] { "theme", "font", "fontSize", "wordWrap", "timestamps", "autoScroll", "shell", "timeout" };
+                    case "bookmark":
+                        subCommands = new[] { "add", "go", "remove", "list" };
+                        break;
+                    case "alias":
+                        subCommands = new[] { "remove" };
+                        break;
+                    case "stopwatch":
+                        subCommands = new[] { "start", "stop", "lap" };
+                        break;
+                    case "log":
+                        subCommands = new[] { "start", "stop" };
+                        break;
+                    case "hash":
+                        subCommands = new[] { "md5", "sha256" };
                         break;
                 }
 
@@ -547,6 +591,15 @@ namespace KocurConsole
                         richTextBoxConsoleOutput.SelectionStart = richTextBoxConsoleOutput.TextLength;
                     }
                 }
+                else
+                {
+                    // File path completion for commands that take file arguments
+                    string[] fileCommands = { "cd", "cat", "type", "head", "tail", "grep", "md5", "sha256", "find", "cp", "copy", "mv", "move", "rm", "del", "touch", "size", "wc", "tree", "open", "write", "log" };
+                    if (fileCommands.Contains(cmd))
+                    {
+                        AutoCompleteFilePath(parts);
+                    }
+                }
                 return;
             }
 
@@ -567,6 +620,71 @@ namespace KocurConsole
                 richTextBoxConsoleOutput.AppendText(savedInput);
                 richTextBoxConsoleOutput.SelectionStart = richTextBoxConsoleOutput.TextLength;
             }
+        }
+
+        private void AutoCompleteFilePath(string[] parts)
+        {
+            string partial = parts[parts.Length - 1];
+            string dir;
+            string prefix;
+
+            try
+            {
+                string fullPartial = Path.IsPathRooted(partial) ? partial : Path.Combine(currentDirectory, partial);
+                if (Directory.Exists(fullPartial))
+                {
+                    dir = fullPartial;
+                    prefix = "";
+                }
+                else
+                {
+                    dir = Path.GetDirectoryName(fullPartial) ?? currentDirectory;
+                    prefix = Path.GetFileName(fullPartial);
+                }
+
+                if (!Directory.Exists(dir)) return;
+
+                var entries = Directory.GetFileSystemEntries(dir)
+                    .Select(e => Path.GetFileName(e))
+                    .Where(e => e.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    .Take(20)
+                    .ToList();
+
+                if (entries.Count == 1)
+                {
+                    string match = entries[0];
+                    string baseParts = string.Join(" ", parts.Take(parts.Length - 1));
+                    string dirPart = Path.IsPathRooted(partial) ? dir : "";
+
+                    string newPath;
+                    if (string.IsNullOrEmpty(prefix))
+                        newPath = partial.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar + match;
+                    else if (!string.IsNullOrEmpty(dirPart))
+                        newPath = Path.Combine(dir, match);
+                    else
+                    {
+                        // Relative path — reconstruct
+                        string relDir = partial.Contains(Path.DirectorySeparatorChar.ToString()) ? partial.Substring(0, partial.LastIndexOf(Path.DirectorySeparatorChar) + 1) : "";
+                        newPath = relDir + match;
+                    }
+
+                    string fullPath = Path.Combine(currentDirectory, newPath);
+                    if (Directory.Exists(fullPath) && !newPath.EndsWith(Path.DirectorySeparatorChar.ToString()))
+                        newPath += Path.DirectorySeparatorChar;
+
+                    SetCurrentInput(baseParts + " " + newPath);
+                }
+                else if (entries.Count > 1)
+                {
+                    string savedInput = GetCurrentInput();
+                    AppendConsoleText("\n  " + string.Join("  ", entries) + "\n", ThemeManager.Current.InfoColor);
+                    ShowPrompt();
+                    richTextBoxConsoleOutput.SelectionColor = ThemeManager.Current.TextColor;
+                    richTextBoxConsoleOutput.AppendText(savedInput);
+                    richTextBoxConsoleOutput.SelectionStart = richTextBoxConsoleOutput.TextLength;
+                }
+            }
+            catch { }
         }
 
         // Required by Designer.cs — inputCommands is hidden so this never fires
@@ -620,9 +738,55 @@ namespace KocurConsole
                 return;
             }
 
+            // Log to session file if active
+            if (logWriter != null)
+            {
+                try { logWriter.WriteLine("[" + DateTime.Now.ToString("HH:mm:ss") + "] > " + command); logWriter.Flush(); }
+                catch { }
+            }
+
+            // Command chaining: split on &&
+            if (command.Contains("&&"))
+            {
+                string[] chained = command.Split(new[] { "&&" }, StringSplitOptions.RemoveEmptyEntries);
+                foreach (string subCmd in chained)
+                {
+                    ExecuteCommand(subCmd.Trim());
+                }
+                return;
+            }
+
+            // Output redirection: >> (append) or > (overwrite)
+            string redirectFile = null;
+            bool redirectAppend = false;
+            if (command.Contains(">>"))
+            {
+                int idx = command.LastIndexOf(">>");
+                redirectFile = command.Substring(idx + 2).Trim();
+                command = command.Substring(0, idx).Trim();
+                redirectAppend = true;
+            }
+            else if (command.Contains(">"))
+            {
+                int idx = command.LastIndexOf(">");
+                redirectFile = command.Substring(idx + 1).Trim();
+                command = command.Substring(0, idx).Trim();
+                redirectAppend = false;
+            }
+
+            // Alias expansion
+            string firstWord = command.Split(' ')[0].ToLower();
+            if (aliases.ContainsKey(firstWord))
+            {
+                command = aliases[firstWord] + command.Substring(firstWord.Length);
+            }
+
             string[] parts = command.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
             string cmd = parts[0].ToLower();
             string[] args = parts.Skip(1).ToArray();
+
+            // Capture text position for output redirection
+            int redirectStartLen = richTextBoxConsoleOutput.TextLength;
 
             switch (cmd)
             {
@@ -825,10 +989,70 @@ namespace KocurConsole
                     RunAsync(() => CmdUpdate());
                     return;
 
+                // ── v1.0.2 Features ──
+                case "bookmark":
+                    CmdBookmark(args);
+                    break;
+                case "alias":
+                    CmdAlias(args);
+                    break;
+                case "stopwatch":
+                    CmdStopwatch(args);
+                    break;
+                case "timer":
+                    if (args.Length > 0)
+                        RunAsync(() => CmdTimer(args));
+                    else
+                        AppendConsoleText("Usage: timer <seconds>\n", ThemeManager.Current.WarningColor);
+                    return;
+                case "log":
+                    CmdLog(args);
+                    break;
+                case "hash":
+                    CmdHash(args);
+                    break;
+                case "curl":
+                    RunAsync(() => CmdCurl(args));
+                    return;
+                case "df":
+                    CmdDf();
+                    break;
+                case "write":
+                    CmdWrite(args);
+                    break;
+
                 // ── CMD/PowerShell Fallback ──
                 default:
                     RunExternalCommand(command);
                     return;
+            }
+
+            // Handle output redirection (for commands that break, not return)
+            if (redirectFile != null)
+            {
+                try
+                {
+                    int endLen = richTextBoxConsoleOutput.TextLength;
+                    if (endLen > redirectStartLen)
+                    {
+                        string output = "";
+                        if (richTextBoxConsoleOutput.InvokeRequired)
+                            richTextBoxConsoleOutput.Invoke(new Action(() => output = richTextBoxConsoleOutput.Text.Substring(redirectStartLen)));
+                        else
+                            output = richTextBoxConsoleOutput.Text.Substring(redirectStartLen);
+
+                        string rPath = ResolvePath(redirectFile);
+                        if (redirectAppend)
+                            File.AppendAllText(rPath, output, Encoding.UTF8);
+                        else
+                            File.WriteAllText(rPath, output, Encoding.UTF8);
+                        AppendConsoleText("  -> " + rPath + "\n", ThemeManager.Current.InfoColor);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    AppendConsoleText("Redirect error: " + ex.Message + "\n", ThemeManager.Current.ErrorColor);
+                }
             }
 
             ShowPrompt();
@@ -911,8 +1135,24 @@ namespace KocurConsole
             AppendConsoleText("  checkupdate       Check for updates\n", t.TextColor);
             AppendConsoleText("  update            Download & install update\n\n", t.TextColor);
 
+            AppendConsoleText(" v1.0.2 Features:\n", t.AccentColor);
+            AppendConsoleText("  bookmark          Manage bookmarks (add/go/remove/list)\n", t.TextColor);
+            AppendConsoleText("  alias <n> <cmd>   Create command alias\n", t.TextColor);
+            AppendConsoleText("  stopwatch         Start/stop/lap stopwatch\n", t.TextColor);
+            AppendConsoleText("  timer <seconds>   Countdown timer with beep\n", t.TextColor);
+            AppendConsoleText("  log start [file]  Session logging\n", t.TextColor);
+            AppendConsoleText("  hash <md5|sha256> Hash text\n", t.TextColor);
+            AppendConsoleText("  curl <url>        Fetch URL content\n", t.TextColor);
+            AppendConsoleText("  df                Disk usage (all drives)\n", t.TextColor);
+            AppendConsoleText("  write <f> <text>  Append text to file\n\n", t.TextColor);
+
+            AppendConsoleText(" Operators:\n", t.AccentColor);
+            AppendConsoleText("  cmd1 && cmd2      Command chaining\n", t.TextColor);
+            AppendConsoleText("  cmd > file        Redirect output (overwrite)\n", t.TextColor);
+            AppendConsoleText("  cmd >> file       Redirect output (append)\n\n", t.TextColor);
+
             AppendConsoleText(" Unknown commands -> " + SettingsManager.Current.Shell + ".exe\n", t.WarningColor);
-            AppendConsoleText(" Tab=autocomplete  Ctrl+C=cancel  Ctrl+L=clear  Esc=clear input\n\n", t.WarningColor);
+            AppendConsoleText(" Tab=autocomplete(+paths)  Ctrl+C=cancel  Ctrl+L=clear  Esc=clear\n\n", t.WarningColor);
         }
 
         #endregion
@@ -2040,6 +2280,402 @@ namespace KocurConsole
                 UpdateHandler.ApplyUpdate(tempPath);
                 Application.Exit();
             }
+        }
+
+        #endregion
+
+        #region v1.0.2 — Bookmarks
+
+        private void CmdBookmark(string[] args)
+        {
+            ConsoleTheme t = ThemeManager.Current;
+            if (args.Length == 0)
+            {
+                // List bookmarks
+                if (bookmarks.Count == 0)
+                {
+                    AppendConsoleText("  No bookmarks saved. Use: bookmark add <name>\n", t.WarningColor);
+                    return;
+                }
+                AppendConsoleText("\n  Bookmarks:\n\n", t.InfoColor);
+                foreach (var kv in bookmarks)
+                    AppendConsoleText("  " + kv.Key.PadRight(15) + kv.Value + "\n", t.TextColor);
+                AppendConsoleText("\n", t.TextColor);
+                return;
+            }
+
+            string action = args[0].ToLower();
+            if (action == "add" && args.Length >= 2)
+            {
+                string name = args[1];
+                string path = args.Length >= 3 ? ResolvePath(args[2]) : currentDirectory;
+                bookmarks[name] = path;
+                SaveAliasesAndBookmarks();
+                AppendConsoleText("Bookmark '" + name + "' -> " + path + "\n", t.InfoColor);
+            }
+            else if (action == "go" && args.Length >= 2)
+            {
+                string name = args[1];
+                if (bookmarks.ContainsKey(name))
+                {
+                    previousDirectory = currentDirectory;
+                    currentDirectory = bookmarks[name];
+                    AppendConsoleText(currentDirectory + "\n", t.TextColor);
+                }
+                else
+                    AppendConsoleText("Bookmark not found: " + name + "\n", t.ErrorColor);
+            }
+            else if (action == "remove" && args.Length >= 2)
+            {
+                if (bookmarks.Remove(args[1]))
+                {
+                    SaveAliasesAndBookmarks();
+                    AppendConsoleText("Removed bookmark: " + args[1] + "\n", t.InfoColor);
+                }
+                else
+                    AppendConsoleText("Not found: " + args[1] + "\n", t.ErrorColor);
+            }
+            else if (action == "list")
+            {
+                CmdBookmark(new string[0]);
+                return;
+            }
+            else
+            {
+                AppendConsoleText("Usage: bookmark [add <name> [path] | go <name> | remove <name> | list]\n", t.WarningColor);
+            }
+        }
+
+        #endregion
+
+        #region v1.0.2 — Aliases
+
+        private void CmdAlias(string[] args)
+        {
+            ConsoleTheme t = ThemeManager.Current;
+            if (args.Length == 0)
+            {
+                if (aliases.Count == 0)
+                {
+                    AppendConsoleText("  No aliases defined. Use: alias <name> <command>\n", t.WarningColor);
+                    return;
+                }
+                AppendConsoleText("\n  Aliases:\n\n", t.InfoColor);
+                foreach (var kv in aliases)
+                    AppendConsoleText("  " + kv.Key.PadRight(15) + "-> " + kv.Value + "\n", t.TextColor);
+                AppendConsoleText("\n", t.TextColor);
+                return;
+            }
+
+            if (args[0].ToLower() == "remove" && args.Length >= 2)
+            {
+                if (aliases.Remove(args[1]))
+                {
+                    SaveAliasesAndBookmarks();
+                    AppendConsoleText("Removed alias: " + args[1] + "\n", t.InfoColor);
+                }
+                else
+                    AppendConsoleText("Not found: " + args[1] + "\n", t.ErrorColor);
+                return;
+            }
+
+            if (args.Length >= 2)
+            {
+                string name = args[0];
+                string cmd = string.Join(" ", args.Skip(1));
+                aliases[name] = cmd;
+                SaveAliasesAndBookmarks();
+                AppendConsoleText("Alias: " + name + " -> " + cmd + "\n", t.InfoColor);
+            }
+            else
+            {
+                AppendConsoleText("Usage: alias <name> <command> | alias remove <name>\n", t.WarningColor);
+            }
+        }
+
+        #endregion
+
+        #region v1.0.2 — Stopwatch & Timer
+
+        private void CmdStopwatch(string[] args)
+        {
+            ConsoleTheme t = ThemeManager.Current;
+            string action = args.Length > 0 ? args[0].ToLower() : "";
+
+            if (action == "start" || (action == "" && activeStopwatch == null))
+            {
+                activeStopwatch = Stopwatch.StartNew();
+                AppendConsoleText("  Stopwatch started.\n", t.InfoColor);
+            }
+            else if (action == "stop" && activeStopwatch != null)
+            {
+                activeStopwatch.Stop();
+                AppendConsoleText("  Stopped: " + FormatElapsed(activeStopwatch.Elapsed) + "\n", t.InfoColor);
+                activeStopwatch = null;
+            }
+            else if (action == "lap" && activeStopwatch != null)
+            {
+                AppendConsoleText("  Lap: " + FormatElapsed(activeStopwatch.Elapsed) + "\n", t.AccentColor);
+            }
+            else if (action == "" && activeStopwatch != null)
+            {
+                AppendConsoleText("  Running: " + FormatElapsed(activeStopwatch.Elapsed) + "\n", t.InfoColor);
+                AppendConsoleText("  Use: stopwatch stop | stopwatch lap\n", t.TextColor);
+            }
+            else if (action == "stop" && activeStopwatch == null)
+            {
+                AppendConsoleText("  No stopwatch running.\n", t.WarningColor);
+            }
+            else
+            {
+                AppendConsoleText("Usage: stopwatch [start | stop | lap]\n", t.WarningColor);
+            }
+        }
+
+        private string FormatElapsed(TimeSpan ts)
+        {
+            if (ts.TotalHours >= 1)
+                return string.Format("{0:00}:{1:00}:{2:00}.{3:000}", (int)ts.TotalHours, ts.Minutes, ts.Seconds, ts.Milliseconds);
+            if (ts.TotalMinutes >= 1)
+                return string.Format("{0:00}:{1:00}.{2:000}", (int)ts.TotalMinutes, ts.Seconds, ts.Milliseconds);
+            return string.Format("{0}.{1:000}s", ts.Seconds, ts.Milliseconds);
+        }
+
+        private void CmdTimer(string[] args)
+        {
+            int seconds;
+            if (!int.TryParse(args[0], out seconds) || seconds <= 0)
+            {
+                AppendConsoleText("Usage: timer <seconds>\n", ThemeManager.Current.WarningColor);
+                return;
+            }
+
+            AppendConsoleText("  Timer: " + seconds + "s\n", ThemeManager.Current.InfoColor);
+            for (int i = seconds; i > 0; i--)
+            {
+                if (cancelRequested) { AppendConsoleText("  Timer cancelled.\n", ThemeManager.Current.WarningColor); return; }
+                AppendConsoleText("  " + i + "...\r", ThemeManager.Current.TextColor);
+                System.Threading.Thread.Sleep(1000);
+            }
+            AppendConsoleText("  Time's up!\n", ThemeManager.Current.WarningColor);
+
+            // Beep notification
+            try { Console.Beep(800, 500); } catch { }
+        }
+
+        #endregion
+
+        #region v1.0.2 — Session Logging
+
+        private void CmdLog(string[] args)
+        {
+            ConsoleTheme t = ThemeManager.Current;
+            if (args.Length == 0)
+            {
+                if (logWriter != null)
+                    AppendConsoleText("  Logging active: " + logFilePath + "\n", t.InfoColor);
+                else
+                    AppendConsoleText("Usage: log start [file] | log stop\n", t.WarningColor);
+                return;
+            }
+
+            string action = args[0].ToLower();
+            if (action == "start")
+            {
+                if (logWriter != null)
+                {
+                    AppendConsoleText("  Already logging to: " + logFilePath + "\n", t.WarningColor);
+                    return;
+                }
+                logFilePath = args.Length >= 2 ? ResolvePath(args[1]) : ResolvePath("session_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".log");
+                try
+                {
+                    logWriter = new StreamWriter(logFilePath, true, Encoding.UTF8);
+                    logWriter.AutoFlush = true;
+                    logWriter.WriteLine("=== KocurConsole Session Log — " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " ===");
+                    AppendConsoleText("  Logging started: " + logFilePath + "\n", t.InfoColor);
+                }
+                catch (Exception ex)
+                {
+                    AppendConsoleText("  Error: " + ex.Message + "\n", t.ErrorColor);
+                    logWriter = null;
+                    logFilePath = null;
+                }
+            }
+            else if (action == "stop")
+            {
+                if (logWriter != null)
+                {
+                    logWriter.WriteLine("=== Session ended — " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " ===");
+                    logWriter.Close();
+                    logWriter = null;
+                    AppendConsoleText("  Logging stopped: " + logFilePath + "\n", t.InfoColor);
+                    logFilePath = null;
+                }
+                else
+                {
+                    AppendConsoleText("  No active log session.\n", t.WarningColor);
+                }
+            }
+            else
+            {
+                AppendConsoleText("Usage: log start [file] | log stop\n", t.WarningColor);
+            }
+        }
+
+        #endregion
+
+        #region v1.0.2 — Hash, Curl, Df, Write
+
+        private void CmdHash(string[] args)
+        {
+            if (args.Length < 2) { AppendConsoleText("Usage: hash <md5|sha256> <text>\n", ThemeManager.Current.WarningColor); return; }
+            string algo = args[0].ToLower();
+            string text = string.Join(" ", args.Skip(1));
+
+            try
+            {
+                byte[] inputBytes = Encoding.UTF8.GetBytes(text);
+                byte[] hash;
+
+                if (algo == "md5")
+                {
+                    using (var h = MD5.Create()) hash = h.ComputeHash(inputBytes);
+                }
+                else if (algo == "sha256")
+                {
+                    using (var h = SHA256.Create()) hash = h.ComputeHash(inputBytes);
+                }
+                else
+                {
+                    AppendConsoleText("Supported: md5, sha256\n", ThemeManager.Current.WarningColor);
+                    return;
+                }
+
+                string hex = BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
+                AppendConsoleText("  " + algo.ToUpper() + ": " + hex + "\n", ThemeManager.Current.TextColor);
+            }
+            catch (Exception ex) { AppendConsoleText("Error: " + ex.Message + "\n", ThemeManager.Current.ErrorColor); }
+        }
+
+        private void CmdCurl(string[] args)
+        {
+            if (args.Length == 0) { AppendConsoleText("Usage: curl <url>\n", ThemeManager.Current.WarningColor); return; }
+            string url = args[0];
+            if (!url.StartsWith("http")) url = "http://" + url;
+
+            try
+            {
+                using (WebClient client = new WebClient())
+                {
+                    client.Headers.Add("User-Agent", "KocurConsole/" + "1.0.2");
+                    string content = client.DownloadString(url);
+
+                    // Truncate to 5000 chars for display
+                    if (content.Length > 5000)
+                    {
+                        AppendConsoleText(content.Substring(0, 5000) + "\n", ThemeManager.Current.TextColor);
+                        AppendConsoleText("[... truncated at 5000 chars, total: " + content.Length + "]\n", ThemeManager.Current.WarningColor);
+                    }
+                    else
+                    {
+                        AppendConsoleText(content + "\n", ThemeManager.Current.TextColor);
+                    }
+                }
+            }
+            catch (Exception ex) { AppendConsoleText("Error: " + ex.Message + "\n", ThemeManager.Current.ErrorColor); }
+        }
+
+        private void CmdDf()
+        {
+            ConsoleTheme t = ThemeManager.Current;
+            AppendConsoleText("\n  " + "Drive".PadRight(8) + "Total".PadRight(12) + "Used".PadRight(12) + "Free".PadRight(12) + "Usage\n", t.AccentColor);
+            AppendConsoleText("  " + new string('-', 56) + "\n", t.TextColor);
+
+            foreach (DriveInfo drive in DriveInfo.GetDrives())
+            {
+                try
+                {
+                    if (!drive.IsReady) continue;
+                    long total = drive.TotalSize;
+                    long free = drive.AvailableFreeSpace;
+                    long used = total - free;
+                    int pct = (int)((double)used / total * 100);
+                    string bar = "[" + new string('#', pct / 5) + new string('-', 20 - pct / 5) + "]";
+
+                    AppendConsoleText("  " + drive.Name.PadRight(8), t.TextColor);
+                    AppendConsoleText(FormatFileSize(total).PadRight(12), t.TextColor);
+                    AppendConsoleText(FormatFileSize(used).PadRight(12), t.TextColor);
+                    AppendConsoleText(FormatFileSize(free).PadRight(12), t.TextColor);
+                    Color barColor = pct > 90 ? t.ErrorColor : pct > 70 ? t.WarningColor : t.InfoColor;
+                    AppendConsoleText(bar + " " + pct + "%\n", barColor);
+                }
+                catch { }
+            }
+            AppendConsoleText("\n", t.TextColor);
+        }
+
+        private void CmdWrite(string[] args)
+        {
+            if (args.Length < 2) { AppendConsoleText("Usage: write <file> <text>\n", ThemeManager.Current.WarningColor); return; }
+            string path = ResolvePath(args[0]);
+            string text = string.Join(" ", args.Skip(1));
+
+            try
+            {
+                File.AppendAllText(path, text + Environment.NewLine, Encoding.UTF8);
+                AppendConsoleText("Written to: " + path + "\n", ThemeManager.Current.InfoColor);
+            }
+            catch (Exception ex) { AppendConsoleText("Error: " + ex.Message + "\n", ThemeManager.Current.ErrorColor); }
+        }
+
+        #endregion
+
+        #region v1.0.2 — Aliases & Bookmarks Persistence
+
+        private void LoadAliasesAndBookmarks()
+        {
+            try
+            {
+                string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "KocurConsole");
+                string aliasFile = Path.Combine(dir, "aliases.txt");
+                string bookmarkFile = Path.Combine(dir, "bookmarks.txt");
+
+                if (File.Exists(aliasFile))
+                {
+                    foreach (string line in File.ReadAllLines(aliasFile))
+                    {
+                        int eq = line.IndexOf('=');
+                        if (eq > 0) aliases[line.Substring(0, eq)] = line.Substring(eq + 1);
+                    }
+                }
+
+                if (File.Exists(bookmarkFile))
+                {
+                    foreach (string line in File.ReadAllLines(bookmarkFile))
+                    {
+                        int eq = line.IndexOf('=');
+                        if (eq > 0) bookmarks[line.Substring(0, eq)] = line.Substring(eq + 1);
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private void SaveAliasesAndBookmarks()
+        {
+            try
+            {
+                string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "KocurConsole");
+                if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+
+                string aliasFile = Path.Combine(dir, "aliases.txt");
+                string bookmarkFile = Path.Combine(dir, "bookmarks.txt");
+
+                File.WriteAllLines(aliasFile, aliases.Select(kv => kv.Key + "=" + kv.Value));
+                File.WriteAllLines(bookmarkFile, bookmarks.Select(kv => kv.Key + "=" + kv.Value));
+            }
+            catch { }
         }
 
         #endregion
