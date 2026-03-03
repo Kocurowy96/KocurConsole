@@ -1,7 +1,7 @@
 {
-  "version": "1.0.2",
-  "releaseDate": "2026-03-01",
+  "version": "1.0.3",
+  "releaseDate": "2026-03-02",
   "downloadUrl": "https://github.com/Kocurowy96/KocurConsole/releases/latest/download/KocurConsole.exe",
   "releasePage": "https://github.com/Kocurowy96/KocurConsole/releases/latest",
-  "changelog": "v1.0.2: bookmarks, aliases, stopwatch/timer, session logging, command chaining (&&), output redirection (>), file path autocomplete, curl, df, hash text, write, auto-update check on startup"
+  "changelog": "v1.0.3: ASCII art welcome, system tray, .kocurrc startup script, F1-F12 pinned commands, syntax highlighting in cat, advanced calc (sin/cos/sqrt/pow/vars), file preview, pipe support, SSH, plugin system"
 }

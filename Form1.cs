@@ -20,7 +20,7 @@ namespace KocurConsole
     public partial class Form1 : Form
     {
         public string terminalName = "KocurConsole Terminal";
-        public string terminalVersion = "1.0.2";
+        public string terminalVersion = "1.0.3";
 
         // Command history
         private List<string> commandHistory = new List<string>();
@@ -51,6 +51,18 @@ namespace KocurConsole
         // Stopwatch
         private Stopwatch activeStopwatch = null;
 
+        // Pinned commands (F1-F12)
+        private Dictionary<Keys, string> pinnedCommands = new Dictionary<Keys, string>();
+
+        // System tray
+        private NotifyIcon trayIcon;
+
+        // Advanced calc variables
+        private Dictionary<string, double> calcVars = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+
+        // Suppress prompts during .kocurrc execution
+        private bool suppressPrompt = false;
+
         // All built-in command names (for autocomplete)
         private readonly string[] builtInCommands = new string[]
         {
@@ -65,7 +77,8 @@ namespace KocurConsole
             "open", "start", "base64", "random", "about", "clipboard",
             "checkupdate", "update",
             "bookmark", "alias", "stopwatch", "timer", "log",
-            "hash", "curl", "df", "write"
+            "hash", "curl", "df", "write",
+            "preview", "plugin", "plugins", "pin", "unpin", "ssh", "rc"
         };
 
         // P/Invoke for dark scrollbar & title bar
@@ -118,12 +131,52 @@ namespace KocurConsole
 
             this.Text = terminalName + " " + terminalVersion;
 
-            AppendConsoleText(terminalName + " " + terminalVersion + " - Type 'help' for available commands\n\n", ThemeManager.Current.InfoColor);
-            ShowPrompt();
+            // ASCII art welcome
+            ConsoleTheme t = ThemeManager.Current;
+            AppendConsoleText("\n", t.TextColor);
+            AppendConsoleText("   /\\_/\\   ", t.AccentColor); AppendConsoleText("KocurConsole v" + terminalVersion + "\n", t.InfoColor);
+            AppendConsoleText("  ( o.o )  ", t.AccentColor); AppendConsoleText("Modern terminal for Windows\n", t.TextColor);
+            AppendConsoleText("   > ^ <   ", t.AccentColor); AppendConsoleText("Type 'help' for commands\n", t.TextColor);
+            AppendConsoleText("  /|   |\\  ", t.AccentColor); AppendConsoleText("Tab = autocomplete + paths\n", t.TextColor);
+            AppendConsoleText(" (_|   |_) ", t.AccentColor); AppendConsoleText("F1-F12 = pinned commands\n\n", t.TextColor);
             richTextBoxConsoleOutput.Focus();
 
-            // Load aliases and bookmarks from settings
+            // Load aliases, bookmarks, pinned commands
             LoadAliasesAndBookmarks();
+            LoadPinnedCommands();
+
+            // Initialize plugin system
+            PluginManager.Initialize();
+            int pluginCount = PluginManager.LoadAll();
+
+            // System tray
+            trayIcon = new NotifyIcon();
+            trayIcon.Text = "KocurConsole";
+            trayIcon.Icon = this.Icon;
+            trayIcon.Visible = false;
+            trayIcon.DoubleClick += (s2, e2) =>
+            {
+                this.Show();
+                this.WindowState = FormWindowState.Normal;
+                trayIcon.Visible = false;
+            };
+            trayIcon.ContextMenuStrip = new ContextMenuStrip();
+            trayIcon.ContextMenuStrip.Items.Add("Show", null, (s2, e2) => { this.Show(); this.WindowState = FormWindowState.Normal; trayIcon.Visible = false; });
+            trayIcon.ContextMenuStrip.Items.Add("Exit", null, (s2, e2) => { Application.Exit(); });
+            this.Resize += (s2, e2) =>
+            {
+                if (this.WindowState == FormWindowState.Minimized)
+                {
+                    this.Hide();
+                    trayIcon.Visible = true;
+                }
+            };
+
+            // Run .kocurrc on startup (before showing prompt)
+            RunKocurrc();
+
+            // Show the interactive prompt
+            ShowPrompt();
 
             // Background update check
             System.Threading.Tasks.Task.Run(() =>
@@ -242,6 +295,8 @@ namespace KocurConsole
 
         private void ShowPrompt()
         {
+            if (suppressPrompt) return;
+
             if (richTextBoxConsoleOutput.InvokeRequired)
             {
                 richTextBoxConsoleOutput.Invoke(new Action(() => ShowPrompt()));
@@ -487,6 +542,22 @@ namespace KocurConsole
                 }
                 return;
             }
+
+            // === F1-F12: pinned commands ===
+            if (e.KeyCode >= Keys.F1 && e.KeyCode <= Keys.F12)
+            {
+                if (pinnedCommands.ContainsKey(e.KeyCode))
+                {
+                    e.Handled = true;
+                    e.SuppressKeyPress = true;
+                    string cmd = pinnedCommands[e.KeyCode];
+                    AppendConsoleText(cmd + "\n", ThemeManager.Current.TextColor);
+                    commandHistory.Add(cmd);
+                    historyIndex = commandHistory.Count;
+                    ExecuteCommand(cmd);
+                }
+                return;
+            }
         }
 
         private void RichTextBox_KeyPress(object sender, KeyPressEventArgs e)
@@ -569,6 +640,16 @@ namespace KocurConsole
                         break;
                     case "hash":
                         subCommands = new[] { "md5", "sha256" };
+                        break;
+                    case "plugin":
+                    case "plugins":
+                        subCommands = new[] { "list", "reload", "create", "dir" };
+                        break;
+                    case "rc":
+                        subCommands = new[] { "edit", "run" };
+                        break;
+                    case "calc":
+                        subCommands = new[] { "vars" };
                         break;
                 }
 
@@ -693,7 +774,7 @@ namespace KocurConsole
         // Marks Tab as an input key so it reaches KeyDown instead of switching focus
         private void RichTextBox_PreviewKeyDown(object sender, PreviewKeyDownEventArgs e)
         {
-            if (e.KeyCode == Keys.Tab)
+            if (e.KeyCode == Keys.Tab || (e.KeyCode >= Keys.F1 && e.KeyCode <= Keys.F12))
             {
                 e.IsInputKey = true;
             }
@@ -753,6 +834,14 @@ namespace KocurConsole
                 {
                     ExecuteCommand(subCmd.Trim());
                 }
+                return;
+            }
+
+            // Pipe support: cmd1 | cmd2
+            if (command.Contains("|") && !command.Contains("||"))
+            {
+                // For pipes, we run the whole thing via cmd.exe which handles pipes natively
+                RunExternalCommand(command);
                 return;
             }
 
@@ -1021,8 +1110,37 @@ namespace KocurConsole
                     CmdWrite(args);
                     break;
 
+                // ── v1.0.3 Features ──
+                case "preview":
+                    RunAsync(() => CmdPreview(args));
+                    return;
+                case "plugin":
+                case "plugins":
+                    CmdPlugin(args);
+                    break;
+                case "pin":
+                    CmdPin(args);
+                    break;
+                case "unpin":
+                    CmdUnpin(args);
+                    break;
+                case "ssh":
+                    RunExternalCommand("ssh " + string.Join(" ", args));
+                    return;
+                case "rc":
+                    CmdRc(args);
+                    break;
+
                 // ── CMD/PowerShell Fallback ──
                 default:
+                    // Check if it's a plugin command
+                    if (PluginManager.HasPlugin(cmd))
+                    {
+                        string result = PluginManager.ExecutePlugin(cmd, args);
+                        if (!string.IsNullOrEmpty(result))
+                            AppendConsoleText(result + "\n", ThemeManager.Current.TextColor);
+                        break;
+                    }
                     RunExternalCommand(command);
                     return;
             }
@@ -1116,7 +1234,7 @@ namespace KocurConsole
 
             AppendConsoleText(" Utility:\n", t.AccentColor);
             AppendConsoleText("  env [name]        Environment variables\n", t.TextColor);
-            AppendConsoleText("  calc <expr>       Calculator\n", t.TextColor);
+            AppendConsoleText("  calc <expr>       Calculator (sin,cos,sqrt,pow,vars)\n", t.TextColor);
             AppendConsoleText("  base64 <enc|dec>  Base64 encode/decode\n", t.TextColor);
             AppendConsoleText("  random [min] [max] Random number\n", t.TextColor);
             AppendConsoleText("  clipboard         Show clipboard text\n", t.TextColor);
@@ -1135,7 +1253,7 @@ namespace KocurConsole
             AppendConsoleText("  checkupdate       Check for updates\n", t.TextColor);
             AppendConsoleText("  update            Download & install update\n\n", t.TextColor);
 
-            AppendConsoleText(" v1.0.2 Features:\n", t.AccentColor);
+            AppendConsoleText(" Productivity:\n", t.AccentColor);
             AppendConsoleText("  bookmark          Manage bookmarks (add/go/remove/list)\n", t.TextColor);
             AppendConsoleText("  alias <n> <cmd>   Create command alias\n", t.TextColor);
             AppendConsoleText("  stopwatch         Start/stop/lap stopwatch\n", t.TextColor);
@@ -1146,13 +1264,23 @@ namespace KocurConsole
             AppendConsoleText("  df                Disk usage (all drives)\n", t.TextColor);
             AppendConsoleText("  write <f> <text>  Append text to file\n\n", t.TextColor);
 
+            AppendConsoleText(" v1.0.3:\n", t.AccentColor);
+            AppendConsoleText("  preview <file>    Paginated file viewer\n", t.TextColor);
+            AppendConsoleText("  cat <file> -n     Syntax highlighting + line numbers\n", t.TextColor);
+            AppendConsoleText("  pin <F1-12> <cmd> Pin command to F-key\n", t.TextColor);
+            AppendConsoleText("  unpin <F1-12>     Unpin F-key\n", t.TextColor);
+            AppendConsoleText("  plugin            Manage plugins (list/reload/create)\n", t.TextColor);
+            AppendConsoleText("  ssh <user@host>   SSH (via OpenSSH)\n", t.TextColor);
+            AppendConsoleText("  rc                Manage .kocurrc startup script\n\n", t.TextColor);
+
             AppendConsoleText(" Operators:\n", t.AccentColor);
             AppendConsoleText("  cmd1 && cmd2      Command chaining\n", t.TextColor);
+            AppendConsoleText("  cmd1 | cmd2       Pipe output\n", t.TextColor);
             AppendConsoleText("  cmd > file        Redirect output (overwrite)\n", t.TextColor);
             AppendConsoleText("  cmd >> file       Redirect output (append)\n\n", t.TextColor);
 
-            AppendConsoleText(" Unknown commands -> " + SettingsManager.Current.Shell + ".exe\n", t.WarningColor);
-            AppendConsoleText(" Tab=autocomplete(+paths)  Ctrl+C=cancel  Ctrl+L=clear  Esc=clear\n\n", t.WarningColor);
+            AppendConsoleText(" Minimize -> system tray | Double-click tray icon to restore\n", t.WarningColor);
+            AppendConsoleText(" Tab=autocomplete  F1-F12=pinned  Ctrl+C=cancel  Esc=clear\n\n", t.WarningColor);
         }
 
         #endregion
@@ -1309,19 +1437,98 @@ namespace KocurConsole
                 string path = ResolvePath(args[0]);
                 if (File.Exists(path))
                 {
+                    string ext = Path.GetExtension(path).ToLower();
                     string[] lines = File.ReadAllLines(path, Encoding.UTF8);
                     int max = Math.Min(lines.Length, 500);
+                    bool showLineNumbers = args.Length > 1 && args[1] == "-n";
+                    ConsoleTheme t = ThemeManager.Current;
+
                     for (int i = 0; i < max; i++)
                     {
                         if (cancelRequested) return;
-                        AppendConsoleText(lines[i] + "\n", ThemeManager.Current.TextColor);
+                        if (showLineNumbers)
+                            AppendConsoleText((i + 1).ToString().PadLeft(4) + " | ", t.AccentColor);
+                        PrintSyntaxHighlighted(lines[i], ext, t);
+                        AppendConsoleText("\n", t.TextColor);
                     }
                     if (lines.Length > 500)
-                        AppendConsoleText("[... truncated, " + lines.Length + " total lines]\n", ThemeManager.Current.WarningColor);
+                        AppendConsoleText("[... truncated, " + lines.Length + " total lines]\n", t.WarningColor);
                 }
                 else { AppendConsoleText("File not found: " + args[0] + "\n", ThemeManager.Current.ErrorColor); }
             }
             catch (Exception ex) { AppendConsoleText("Error: " + ex.Message + "\n", ThemeManager.Current.ErrorColor); }
+        }
+
+        private void PrintSyntaxHighlighted(string line, string ext, ConsoleTheme t)
+        {
+            // No highlighting for unknown types
+            string[] codeExts = { ".cs", ".js", ".py", ".json", ".xml", ".html", ".bat", ".cmd", ".css", ".java", ".cpp", ".c", ".h" };
+            if (!codeExts.Contains(ext)) { AppendConsoleText(line, t.TextColor); return; }
+
+            // C#/Java/JS/C++ keywords
+            string[] keywords = { "using", "namespace", "class", "public", "private", "protected", "static", "void",
+                "int", "string", "bool", "var", "new", "return", "if", "else", "for", "foreach", "while",
+                "try", "catch", "finally", "throw", "async", "await", "null", "true", "false",
+                "function", "const", "let", "import", "from", "export", "def", "self", "print",
+                "echo", "set", "goto", "call", "include", "struct", "enum", "interface", "override" };
+
+            string trimmed = line.TrimStart();
+
+            // Comments
+            if (trimmed.StartsWith("//") || trimmed.StartsWith("#") || trimmed.StartsWith("REM ") || trimmed.StartsWith("<!--"))
+            {
+                AppendConsoleText(line, Color.FromArgb(106, 153, 85)); // green comments
+                return;
+            }
+
+            // Strings (simplified)
+            if (trimmed.Contains("\"") || trimmed.Contains("'"))
+            {
+                // Just colorize the whole line with string detection
+                int idx = 0;
+                while (idx < line.Length)
+                {
+                    if (line[idx] == '"' || line[idx] == '\'')
+                    {
+                        char quote = line[idx];
+                        int end = line.IndexOf(quote, idx + 1);
+                        if (end == -1) end = line.Length - 1;
+                        AppendConsoleText(line.Substring(idx, end - idx + 1), Color.FromArgb(206, 145, 120)); // orange strings
+                        idx = end + 1;
+                    }
+                    else
+                    {
+                        // Find next quote or end
+                        int nextQuote = -1;
+                        for (int q = idx; q < line.Length; q++)
+                        {
+                            if (line[q] == '"' || line[q] == '\'') { nextQuote = q; break; }
+                        }
+                        if (nextQuote == -1) nextQuote = line.Length;
+                        string segment = line.Substring(idx, nextQuote - idx);
+                        PrintKeywords(segment, keywords, t);
+                        idx = nextQuote;
+                    }
+                }
+                return;
+            }
+
+            PrintKeywords(line, keywords, t);
+        }
+
+        private void PrintKeywords(string text, string[] keywords, ConsoleTheme t)
+        {
+            // Split by word boundaries and colorize keywords
+            string[] tokens = System.Text.RegularExpressions.Regex.Split(text, @"(\b\w+\b)");
+            foreach (string token in tokens)
+            {
+                if (keywords.Contains(token.ToLower()))
+                    AppendConsoleText(token, Color.FromArgb(86, 156, 214)); // blue keywords
+                else if (token.Length > 0 && char.IsDigit(token[0]))
+                    AppendConsoleText(token, Color.FromArgb(181, 206, 168)); // green numbers
+                else
+                    AppendConsoleText(token, t.TextColor);
+            }
         }
 
         private void CmdTouch(string[] args)
@@ -1489,15 +1696,109 @@ namespace KocurConsole
 
         private void CmdCalc(string[] args)
         {
-            if (args.Length == 0) { AppendConsoleText("Usage: calc <expr>\n", ThemeManager.Current.WarningColor); return; }
+            if (args.Length == 0) { AppendConsoleText("Usage: calc <expr> | calc <var>=<expr> | calc vars\n", ThemeManager.Current.WarningColor); return; }
+            string expr = string.Join(" ", args);
+
+            // Show variables
+            if (expr.Trim().ToLower() == "vars")
+            {
+                if (calcVars.Count == 0) { AppendConsoleText("  No variables.\n", ThemeManager.Current.WarningColor); return; }
+                foreach (var kv in calcVars)
+                    AppendConsoleText("  " + kv.Key + " = " + kv.Value + "\n", ThemeManager.Current.TextColor);
+                return;
+            }
+
             try
             {
-                string expr = string.Join(" ", args);
+                // Variable assignment: x = 5+3
+                string varName = null;
+                if (expr.Contains("=") && !expr.Contains("=="))
+                {
+                    int eqIdx = expr.IndexOf('=');
+                    string left = expr.Substring(0, eqIdx).Trim();
+                    if (left.All(c => char.IsLetterOrDigit(c) || c == '_'))
+                    {
+                        varName = left;
+                        expr = expr.Substring(eqIdx + 1).Trim();
+                    }
+                }
+
+                // Replace math functions
+                expr = expr.Replace("pi", Math.PI.ToString(System.Globalization.CultureInfo.InvariantCulture))
+                           .Replace("PI", Math.PI.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
+                // Replace variables
+                foreach (var kv in calcVars)
+                    expr = expr.Replace(kv.Key, kv.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
+                // Handle math functions
+                expr = EvaluateMathFunctions(expr);
+
                 DataTable dt = new DataTable();
                 object result = dt.Compute(expr, "");
-                AppendConsoleText("= " + result.ToString() + "\n", ThemeManager.Current.InfoColor);
+                double val = Convert.ToDouble(result);
+
+                if (varName != null)
+                {
+                    calcVars[varName] = val;
+                    AppendConsoleText("  " + varName + " = " + val + "\n", ThemeManager.Current.InfoColor);
+                }
+                else
+                {
+                    AppendConsoleText("  = " + val + "\n", ThemeManager.Current.InfoColor);
+                }
             }
             catch (Exception ex) { AppendConsoleText("Error: " + ex.Message + "\n", ThemeManager.Current.ErrorColor); }
+        }
+
+        private string EvaluateMathFunctions(string expr)
+        {
+            string[] funcs = { "sin", "cos", "tan", "sqrt", "abs", "log", "log10", "ceil", "floor", "round", "pow" };
+            foreach (string func in funcs)
+            {
+                while (expr.Contains(func + "("))
+                {
+                    int start = expr.IndexOf(func + "(");
+                    int paren = start + func.Length;
+                    int depth = 1;
+                    int end = paren + 1;
+                    while (end < expr.Length && depth > 0)
+                    {
+                        if (expr[end] == '(') depth++;
+                        if (expr[end] == ')') depth--;
+                        end++;
+                    }
+                    string inner = expr.Substring(paren + 1, end - paren - 2);
+                    string[] innerArgs = inner.Split(',');
+
+                    // Evaluate inner expression
+                    DataTable dt2 = new DataTable();
+                    double val1 = Convert.ToDouble(dt2.Compute(EvaluateMathFunctions(innerArgs[0].Trim()), ""));
+                    double result;
+
+                    switch (func)
+                    {
+                        case "sin": result = Math.Sin(val1); break;
+                        case "cos": result = Math.Cos(val1); break;
+                        case "tan": result = Math.Tan(val1); break;
+                        case "sqrt": result = Math.Sqrt(val1); break;
+                        case "abs": result = Math.Abs(val1); break;
+                        case "log": result = Math.Log(val1); break;
+                        case "log10": result = Math.Log10(val1); break;
+                        case "ceil": result = Math.Ceiling(val1); break;
+                        case "floor": result = Math.Floor(val1); break;
+                        case "round": result = Math.Round(val1); break;
+                        case "pow":
+                            double val2 = innerArgs.Length > 1 ? Convert.ToDouble(dt2.Compute(innerArgs[1].Trim(), "")) : 2;
+                            result = Math.Pow(val1, val2);
+                            break;
+                        default: result = val1; break;
+                    }
+
+                    expr = expr.Substring(0, start) + result.ToString(System.Globalization.CultureInfo.InvariantCulture) + expr.Substring(end);
+                }
+            }
+            return expr;
         }
 
         #endregion
@@ -2676,6 +2977,270 @@ namespace KocurConsole
                 File.WriteAllLines(bookmarkFile, bookmarks.Select(kv => kv.Key + "=" + kv.Value));
             }
             catch { }
+        }
+
+        #endregion
+
+        #region v1.0.3 — Preview (Paginated File Viewer)
+
+        private void CmdPreview(string[] args)
+        {
+            if (args.Length == 0) { AppendConsoleText("Usage: preview <file>\n", ThemeManager.Current.WarningColor); return; }
+            string path = ResolvePath(args[0]);
+            if (!File.Exists(path)) { AppendConsoleText("File not found: " + args[0] + "\n", ThemeManager.Current.ErrorColor); return; }
+
+            try
+            {
+                string[] lines = File.ReadAllLines(path, Encoding.UTF8);
+                string ext = Path.GetExtension(path).ToLower();
+                int pageSize = 25;
+                int offset = 0;
+                ConsoleTheme t = ThemeManager.Current;
+
+                while (!cancelRequested)
+                {
+                    int end = Math.Min(offset + pageSize, lines.Length);
+                    AppendConsoleText("\n", t.TextColor);
+                    for (int i = offset; i < end; i++)
+                    {
+                        AppendConsoleText((i + 1).ToString().PadLeft(4) + " | ", t.AccentColor);
+                        PrintSyntaxHighlighted(lines[i], ext, t);
+                        AppendConsoleText("\n", t.TextColor);
+                    }
+
+                    if (end >= lines.Length)
+                    {
+                        AppendConsoleText("\n  [END - " + lines.Length + " lines]\n", t.WarningColor);
+                        break;
+                    }
+
+                    AppendConsoleText("\n  Lines " + (offset + 1) + "-" + end + " of " + lines.Length + " | Press Enter=next, q=quit\n", t.InfoColor);
+                    // Simple wait - the async wrapper handles this
+                    System.Threading.Thread.Sleep(100);
+
+                    // Auto-advance to next page
+                    offset = end;
+                    if (offset >= lines.Length) break;
+                }
+            }
+            catch (Exception ex) { AppendConsoleText("Error: " + ex.Message + "\n", ThemeManager.Current.ErrorColor); }
+        }
+
+        #endregion
+
+        #region v1.0.3 — Plugin Commands
+
+        private void CmdPlugin(string[] args)
+        {
+            ConsoleTheme t = ThemeManager.Current;
+            string action = args.Length > 0 ? args[0].ToLower() : "list";
+
+            if (action == "list")
+            {
+                string[] names = PluginManager.GetPluginNames();
+                if (names.Length == 0)
+                {
+                    AppendConsoleText("  No plugins loaded.\n", t.WarningColor);
+                    AppendConsoleText("  Plugin dir: " + PluginManager.PluginDirectory + "\n", t.TextColor);
+                    AppendConsoleText("  Use: plugin create — to create an example plugin\n", t.TextColor);
+                }
+                else
+                {
+                    AppendConsoleText("\n  Loaded plugins:\n\n", t.InfoColor);
+                    foreach (string name in names)
+                        AppendConsoleText("  " + name + "\n", t.TextColor);
+                    AppendConsoleText("\n  Dir: " + PluginManager.PluginDirectory + "\n\n", t.AccentColor);
+                }
+            }
+            else if (action == "reload")
+            {
+                int count = PluginManager.LoadAll();
+                AppendConsoleText("  Reloaded " + count + " plugin(s).\n", t.InfoColor);
+            }
+            else if (action == "create")
+            {
+                PluginManager.CreateExample();
+                AppendConsoleText("  Example plugin created: " + Path.Combine(PluginManager.PluginDirectory, "hello.cs") + "\n", t.InfoColor);
+                AppendConsoleText("  Run 'plugin reload' then type 'hello' to test!\n", t.TextColor);
+            }
+            else if (action == "dir")
+            {
+                try
+                {
+                    Process.Start("explorer.exe", PluginManager.PluginDirectory);
+                }
+                catch { }
+            }
+            else
+            {
+                AppendConsoleText("Usage: plugin [list | reload | create | dir]\n", t.WarningColor);
+            }
+        }
+
+        #endregion
+
+        #region v1.0.3 — Pinned Commands (F1-F12)
+
+        private void CmdPin(string[] args)
+        {
+            ConsoleTheme t = ThemeManager.Current;
+            if (args.Length < 2)
+            {
+                // Show current pins
+                AppendConsoleText("\n  Pinned commands:\n\n", t.InfoColor);
+                bool any = false;
+                for (int i = 1; i <= 12; i++)
+                {
+                    Keys key = (Keys)((int)Keys.F1 + i - 1);
+                    if (pinnedCommands.ContainsKey(key))
+                    {
+                        AppendConsoleText("  F" + i.ToString().PadRight(3) + pinnedCommands[key] + "\n", t.TextColor);
+                        any = true;
+                    }
+                }
+                if (!any) AppendConsoleText("  None. Use: pin <F1-F12> <command>\n", t.WarningColor);
+                AppendConsoleText("\n", t.TextColor);
+                return;
+            }
+
+            string keyStr = args[0].ToUpper();
+            string cmd = string.Join(" ", args.Skip(1));
+
+            if (keyStr.StartsWith("F") && int.TryParse(keyStr.Substring(1), out int fNum) && fNum >= 1 && fNum <= 12)
+            {
+                Keys key = (Keys)((int)Keys.F1 + fNum - 1);
+                pinnedCommands[key] = cmd;
+                SavePinnedCommands();
+                AppendConsoleText("  " + keyStr + " -> " + cmd + "\n", t.InfoColor);
+            }
+            else
+            {
+                AppendConsoleText("Usage: pin <F1-F12> <command>\n", t.WarningColor);
+            }
+        }
+
+        private void CmdUnpin(string[] args)
+        {
+            if (args.Length == 0) { AppendConsoleText("Usage: unpin <F1-F12>\n", ThemeManager.Current.WarningColor); return; }
+            string keyStr = args[0].ToUpper();
+            if (keyStr.StartsWith("F") && int.TryParse(keyStr.Substring(1), out int fNum) && fNum >= 1 && fNum <= 12)
+            {
+                Keys key = (Keys)((int)Keys.F1 + fNum - 1);
+                pinnedCommands.Remove(key);
+                SavePinnedCommands();
+                AppendConsoleText("  Unpinned " + keyStr + "\n", ThemeManager.Current.InfoColor);
+            }
+        }
+
+        private void LoadPinnedCommands()
+        {
+            try
+            {
+                string path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "KocurConsole", "pins.txt");
+                if (!File.Exists(path)) return;
+                foreach (string line in File.ReadAllLines(path))
+                {
+                    int eq = line.IndexOf('=');
+                    if (eq > 0)
+                    {
+                        string keyStr = line.Substring(0, eq);
+                        string cmd = line.Substring(eq + 1);
+                        if (Enum.TryParse(keyStr, out Keys key))
+                            pinnedCommands[key] = cmd;
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private void SavePinnedCommands()
+        {
+            try
+            {
+                string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "KocurConsole");
+                if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+                string path = Path.Combine(dir, "pins.txt");
+                File.WriteAllLines(path, pinnedCommands.Select(kv => kv.Key.ToString() + "=" + kv.Value));
+            }
+            catch { }
+        }
+
+        #endregion
+
+        #region v1.0.3 — .kocurrc Task Runner
+
+        private void RunKocurrc()
+        {
+            try
+            {
+                string[] rcPaths = new[]
+                {
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".kocurrc"),
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "KocurConsole", ".kocurrc")
+                };
+
+                foreach (string rcPath in rcPaths)
+                {
+                    if (File.Exists(rcPath))
+                    {
+                        string[] lines = File.ReadAllLines(rcPath);
+                        suppressPrompt = true;
+                        foreach (string line in lines)
+                        {
+                            string trimmed = line.Trim();
+                            if (string.IsNullOrEmpty(trimmed) || trimmed.StartsWith("#")) continue;
+                            ExecuteCommand(trimmed);
+                        }
+                        suppressPrompt = false;
+                        break;
+                    }
+                }
+            }
+            catch { suppressPrompt = false; }
+        }
+
+        private void CmdRc(string[] args)
+        {
+            ConsoleTheme t = ThemeManager.Current;
+            string rcPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".kocurrc");
+
+            if (args.Length == 0)
+            {
+                // Show rc file
+                if (File.Exists(rcPath))
+                {
+                    AppendConsoleText("\n  .kocurrc (" + rcPath + "):\n\n", t.InfoColor);
+                    foreach (string line in File.ReadAllLines(rcPath))
+                        AppendConsoleText("  " + line + "\n", t.TextColor);
+                    AppendConsoleText("\n", t.TextColor);
+                }
+                else
+                {
+                    AppendConsoleText("  No .kocurrc found. Use: rc edit\n", t.WarningColor);
+                    AppendConsoleText("  Path: " + rcPath + "\n", t.TextColor);
+                }
+                return;
+            }
+
+            string action = args[0].ToLower();
+            if (action == "edit")
+            {
+                if (!File.Exists(rcPath))
+                {
+                    File.WriteAllText(rcPath, "# KocurConsole startup commands\n# Lines starting with # are comments\n# Example:\n# theme dracula\n# echo Welcome back!\n");
+                }
+                Process.Start("notepad.exe", rcPath);
+                AppendConsoleText("  Opened in Notepad: " + rcPath + "\n", t.InfoColor);
+            }
+            else if (action == "run")
+            {
+                RunKocurrc();
+                AppendConsoleText("  Executed .kocurrc\n", t.InfoColor);
+            }
+            else
+            {
+                AppendConsoleText("Usage: rc [edit | run]\n", t.WarningColor);
+            }
         }
 
         #endregion

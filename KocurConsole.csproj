@@ -64,6 +64,7 @@
     </Compile>
     <Compile Include="ThemeManager.cs" />
     <Compile Include="UpdateHandler.cs" />
+    <Compile Include="PluginManager.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <EmbeddedResource Include="Form1.resx">
