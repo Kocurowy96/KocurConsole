@@ -78,7 +78,7 @@ namespace KocurConsole
             "checkupdate", "update",
             "bookmark", "alias", "stopwatch", "timer", "log",
             "hash", "curl", "df", "write",
-            "preview", "plugin", "plugins", "pin", "unpin", "ssh", "rc"
+            "preview", "plugin", "plugins", "pin", "unpin", "ssh", "rc", "kocursh"
         };
 
         // P/Invoke for dark scrollbar & title bar
@@ -279,6 +279,41 @@ namespace KocurConsole
             richTextBoxConsoleOutput.SelectionColor = richTextBoxConsoleOutput.ForeColor;
 
             // Auto-scroll only on programmatic output (not user typing)
+            if (SettingsManager.Current.AutoScroll)
+            {
+                richTextBoxConsoleOutput.SelectionStart = richTextBoxConsoleOutput.TextLength;
+                richTextBoxConsoleOutput.ScrollToCaret();
+            }
+        }
+
+        /// <summary>
+        /// Replace the last line of text in the console (for TUI progress bars).
+        /// </summary>
+        private void ReplaceLastLine(string text, Color color)
+        {
+            if (richTextBoxConsoleOutput.InvokeRequired)
+            {
+                richTextBoxConsoleOutput.Invoke(new Action(() => ReplaceLastLine(text, color)));
+                return;
+            }
+
+            string content = richTextBoxConsoleOutput.Text;
+            // Find the start of the last line (second-to-last newline)
+            int lastNewline = content.LastIndexOf('\n');
+            if (lastNewline > 0)
+            {
+                int prevNewline = content.LastIndexOf('\n', lastNewline - 1);
+                int lineStart = prevNewline >= 0 ? prevNewline + 1 : 0;
+
+                richTextBoxConsoleOutput.Select(lineStart, lastNewline - lineStart + 1);
+                richTextBoxConsoleOutput.SelectionColor = color;
+                richTextBoxConsoleOutput.SelectedText = text;
+            }
+            else
+            {
+                AppendConsoleText(text, color);
+            }
+
             if (SettingsManager.Current.AutoScroll)
             {
                 richTextBoxConsoleOutput.SelectionStart = richTextBoxConsoleOutput.TextLength;
@@ -650,6 +685,9 @@ namespace KocurConsole
                         break;
                     case "calc":
                         subCommands = new[] { "vars" };
+                        break;
+                    case "kocursh":
+                        subCommands = new[] { "run", "new", "example" };
                         break;
                 }
 
@@ -1130,9 +1168,18 @@ namespace KocurConsole
                 case "rc":
                     CmdRc(args);
                     break;
+                case "kocursh":
+                    RunAsync(() => CmdKocurSh(args));
+                    return;
 
                 // ── CMD/PowerShell Fallback ──
                 default:
+                    // Check if it's a .kocursh script file
+                    if (command.EndsWith(".kocursh", StringComparison.OrdinalIgnoreCase))
+                    {
+                        RunAsync(() => CmdKocurSh(new[] { command }));
+                        return;
+                    }
                     // Check if it's a plugin command
                     if (PluginManager.HasPlugin(cmd))
                     {
@@ -1272,6 +1319,13 @@ namespace KocurConsole
             AppendConsoleText("  plugin            Manage plugins (list/reload/create)\n", t.TextColor);
             AppendConsoleText("  ssh <user@host>   SSH (via OpenSSH)\n", t.TextColor);
             AppendConsoleText("  rc                Manage .kocurrc startup script\n\n", t.TextColor);
+
+            AppendConsoleText(" KocurSh Scripting:\n", t.AccentColor);
+            AppendConsoleText("  kocursh           Show scripting help\n", t.TextColor);
+            AppendConsoleText("  kocursh run <f>   Run .kocursh script\n", t.TextColor);
+            AppendConsoleText("  kocursh new <f>   Create new script\n", t.TextColor);
+            AppendConsoleText("  kocursh example   Generate example script\n", t.TextColor);
+            AppendConsoleText("  myfile.kocursh    Auto-run script\n\n", t.TextColor);
 
             AppendConsoleText(" Operators:\n", t.AccentColor);
             AppendConsoleText("  cmd1 && cmd2      Command chaining\n", t.TextColor);
@@ -3241,6 +3295,122 @@ namespace KocurConsole
             {
                 AppendConsoleText("Usage: rc [edit | run]\n", t.WarningColor);
             }
+        }
+
+        #endregion
+
+        #region v1.0.3 — KocurSh Scripting
+
+        private void CmdKocurSh(string[] args)
+        {
+            ConsoleTheme t = ThemeManager.Current;
+
+            if (args.Length == 0)
+            {
+                AppendConsoleText("\n  KocurSh — KocurConsole Scripting Language\n\n", t.InfoColor);
+                AppendConsoleText("  Usage:\n", t.AccentColor);
+                AppendConsoleText("    kocursh run <file.kocursh>   Run a script\n", t.TextColor);
+                AppendConsoleText("    kocursh new <file.kocursh>   Create new script\n", t.TextColor);
+                AppendConsoleText("    kocursh example              Generate example script\n\n", t.TextColor);
+                AppendConsoleText("  You can also type: myfile.kocursh  (auto-runs)\n\n", t.TextColor);
+                AppendConsoleText("  Language features:\n", t.AccentColor);
+                AppendConsoleText("    $var = value                 Variables\n", t.TextColor);
+                AppendConsoleText("    $var = @(C# expression)     C# expression\n", t.TextColor);
+                AppendConsoleText("    echo Hello, $var!            Interpolation\n", t.TextColor);
+                AppendConsoleText("    @{ C# code }                C# code block\n", t.TextColor);
+                AppendConsoleText("    if $x == \"yes\" ... end       Conditionals\n", t.TextColor);
+                AppendConsoleText("    for $i in 1..10 ... end      Loops\n", t.TextColor);
+                AppendConsoleText("    func name($a) ... end        Functions\n", t.TextColor);
+                AppendConsoleText("    call name(arg)               Function calls\n", t.TextColor);
+                AppendConsoleText("    # comment                    Comments\n", t.TextColor);
+                AppendConsoleText("    sleep <ms>                   Pause\n", t.TextColor);
+                AppendConsoleText("    print <text>                 Print with vars\n\n", t.TextColor);
+                return;
+            }
+
+            string action = args[0].ToLower();
+
+            // Direct file execution: kocursh myfile.kocursh or just myfile.kocursh
+            if (action.EndsWith(".kocursh"))
+            {
+                string scriptPath = ResolvePath(action);
+                RunScript(scriptPath);
+                return;
+            }
+
+            if (action == "run" && args.Length > 1)
+            {
+                string scriptPath = ResolvePath(args[1]);
+                RunScript(scriptPath);
+            }
+            else if (action == "new" && args.Length > 1)
+            {
+                string scriptPath = ResolvePath(args[1]);
+                if (!scriptPath.EndsWith(".kocursh")) scriptPath += ".kocursh";
+                if (File.Exists(scriptPath))
+                {
+                    AppendConsoleText("  File already exists: " + scriptPath + "\n", t.WarningColor);
+                    return;
+                }
+                File.WriteAllText(scriptPath, "# KocurSh Script\n# " + Path.GetFileName(scriptPath) + "\n\necho Hello from KocurSh!\n\n$name = World\necho Greetings, $name!\n");
+                AppendConsoleText("  Created: " + scriptPath + "\n", t.InfoColor);
+                Process.Start("notepad.exe", scriptPath);
+            }
+            else if (action == "example")
+            {
+                string exPath = ResolvePath("example.kocursh");
+                File.WriteAllText(exPath, KocurShEngine.GetExampleScript());
+                AppendConsoleText("  Created: " + exPath + "\n", t.InfoColor);
+                AppendConsoleText("  Run it:  kocursh run example.kocursh\n\n", t.TextColor);
+            }
+            else
+            {
+                AppendConsoleText("Usage: kocursh [run <file> | new <file> | example]\n", t.WarningColor);
+            }
+        }
+
+        private void RunScript(string scriptPath)
+        {
+            ConsoleTheme t = ThemeManager.Current;
+            if (!File.Exists(scriptPath))
+            {
+                AppendConsoleText("  Script not found: " + scriptPath + "\n", t.ErrorColor);
+                return;
+            }
+
+            AppendConsoleText("  Running: " + Path.GetFileName(scriptPath) + "\n\n", t.AccentColor);
+
+            var engine = new KocurShEngine(
+                cmd => {
+                    richTextBoxConsoleOutput.Invoke(new Action(() => {
+                        suppressPrompt = true;
+                        try { ExecuteCommand(cmd); }
+                        finally { suppressPrompt = false; }
+                    }));
+                },
+                (text, color) => AppendConsoleText(text, color),
+                (text, color) => ReplaceLastLine(text, color),
+                () => cancelRequested
+            );
+
+            // Pass current directory as variable
+            engine.SetVariable("CWD", currentDirectory);
+            engine.SetVariable("VERSION", terminalVersion);
+
+            try
+            {
+                engine.ExecuteFile(scriptPath);
+            }
+            catch (Exception ex)
+            {
+                AppendConsoleText("\n  Script error: " + ex.Message + "\n", t.ErrorColor);
+            }
+            finally
+            {
+                suppressPrompt = false;
+            }
+
+            AppendConsoleText("\n", t.TextColor);
         }
 
         #endregion
