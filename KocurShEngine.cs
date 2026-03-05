@@ -140,7 +140,7 @@ namespace KocurConsole
                 if (HandleFileBuiltin(line)) { i++; continue; }
 
                 // Variable assignment: $var = value
-                if (line.StartsWith("$") && line.Contains("="))
+                if (line.StartsWith("$") && line.Contains('='))
                 {
                     HandleAssignment(line);
                     i++;
@@ -314,7 +314,6 @@ namespace KocurConsole
                     i++;
                     continue;
                 }
-
 
                 // Exit
                 if (line == "exit" || line.StartsWith("exit "))
@@ -543,7 +542,7 @@ namespace KocurConsole
             else
             {
                 funcName = callExpr;
-                callArgs = new string[0];
+                callArgs = Array.Empty<string>();
             }
 
             if (!functions.ContainsKey(funcName))
@@ -556,9 +555,9 @@ namespace KocurConsole
             string decl = body[0]; // name($a, $b)
 
             // Parse parameter names
-            string[] paramNames = new string[0];
+            string[] paramNames = Array.Empty<string>();
             int pStart = decl.IndexOf('(');
-            if (pStart > 0 && decl.Contains(")"))
+            if (pStart > 0 && decl.Contains(')'))
             {
                 string paramStr = decl.Substring(pStart + 1, decl.IndexOf(')') - pStart - 1);
                 paramNames = paramStr.Split(',').Select(p => p.Trim().TrimStart('$')).ToArray();
