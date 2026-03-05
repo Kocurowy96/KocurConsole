@@ -1,0 +1,8 @@
+
+   /\_/\   KocurConsole v1.0.3
+  ( o.o )  Modern terminal for Windows
+   > ^ <   Type 'help' for commands
+  /|   |\  Tab = autocomplete + paths
+ (_|   |_) F1-F12 = pinned commands
+
+[21:37:00] You (C:\Users\You) >> 
