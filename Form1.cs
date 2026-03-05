@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
@@ -876,7 +876,7 @@ namespace KocurConsole
             }
 
             // Pipe support: cmd1 | cmd2
-            if (command.Contains("|") && !command.Contains("||"))
+            if (command.Contains('|') && !command.Contains("||"))
             {
                 // For pipes, we run the whole thing via cmd.exe which handles pipes natively
                 RunExternalCommand(command);
@@ -893,7 +893,7 @@ namespace KocurConsole
                 command = command.Substring(0, idx).Trim();
                 redirectAppend = true;
             }
-            else if (command.Contains(">"))
+            else if (command.Contains('>'))
             {
                 int idx = command.LastIndexOf(">");
                 redirectFile = command.Substring(idx + 1).Trim();
@@ -1536,7 +1536,7 @@ namespace KocurConsole
             }
 
             // Strings (simplified)
-            if (trimmed.Contains("\"") || trimmed.Contains("'"))
+            if (trimmed.Contains('"') || trimmed.Contains('\''))
             {
                 // Just colorize the whole line with string detection
                 int idx = 0;
@@ -1766,7 +1766,7 @@ namespace KocurConsole
             {
                 // Variable assignment: x = 5+3
                 string varName = null;
-                if (expr.Contains("=") && !expr.Contains("=="))
+                if (expr.Contains('=') && !expr.Contains("=="))
                 {
                     int eqIdx = expr.IndexOf('=');
                     string left = expr.Substring(0, eqIdx).Trim();
@@ -2312,7 +2312,7 @@ namespace KocurConsole
                 using (var stream = File.OpenRead(path))
                 {
                     byte[] hash = md5.ComputeHash(stream);
-                    string hex = BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
+                    string hex = Convert.ToHexStringLower(hash);
                     AppendConsoleText("  MD5: " + hex + "\n", ThemeManager.Current.TextColor);
                 }
             }
@@ -2330,7 +2330,7 @@ namespace KocurConsole
                 using (var stream = File.OpenRead(path))
                 {
                     byte[] hash = sha.ComputeHash(stream);
-                    string hex = BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
+                    string hex = Convert.ToHexStringLower(hash);
                     AppendConsoleText("  SHA256: " + hex + "\n", ThemeManager.Current.TextColor);
                 }
             }
@@ -2692,7 +2692,7 @@ namespace KocurConsole
             }
             else if (action == "list")
             {
-                CmdBookmark(new string[0]);
+                CmdBookmark(Array.Empty<string>());
                 return;
             }
             else
@@ -2907,7 +2907,7 @@ namespace KocurConsole
                     return;
                 }
 
-                string hex = BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
+                string hex = Convert.ToHexStringLower(hash);
                 AppendConsoleText("  " + algo.ToUpper() + ": " + hex + "\n", ThemeManager.Current.TextColor);
             }
             catch (Exception ex) { AppendConsoleText("Error: " + ex.Message + "\n", ThemeManager.Current.ErrorColor); }
@@ -2956,7 +2956,7 @@ namespace KocurConsole
                     long free = drive.AvailableFreeSpace;
                     long used = total - free;
                     int pct = (int)((double)used / total * 100);
-                    string bar = "[" + new string('#', pct / 5) + new string('-', 20 - pct / 5) + "]";
+                    string bar = "[" + new string('#', pct / 5) + new string('-', 20 - (pct / 5)) + "]";
 
                     AppendConsoleText("  " + drive.Name.PadRight(8), t.TextColor);
                     AppendConsoleText(FormatFileSize(total).PadRight(12), t.TextColor);
@@ -3160,7 +3160,7 @@ namespace KocurConsole
             string keyStr = args[0].ToUpper();
             string cmd = string.Join(" ", args.Skip(1));
 
-            if (keyStr.StartsWith("F") && int.TryParse(keyStr.Substring(1), out int fNum) && fNum >= 1 && fNum <= 12)
+            if (keyStr.StartsWith("F") && int.TryParse(keyStr.AsSpan(1), out int fNum) && fNum >= 1 && fNum <= 12)
             {
                 Keys key = (Keys)((int)Keys.F1 + fNum - 1);
                 pinnedCommands[key] = cmd;
@@ -3177,7 +3177,7 @@ namespace KocurConsole
         {
             if (args.Length == 0) { AppendConsoleText("Usage: unpin <F1-F12>\n", ThemeManager.Current.WarningColor); return; }
             string keyStr = args[0].ToUpper();
-            if (keyStr.StartsWith("F") && int.TryParse(keyStr.Substring(1), out int fNum) && fNum >= 1 && fNum <= 12)
+            if (keyStr.StartsWith("F") && int.TryParse(keyStr.AsSpan(1), out int fNum) && fNum >= 1 && fNum <= 12)
             {
                 Keys key = (Keys)((int)Keys.F1 + fNum - 1);
                 pinnedCommands.Remove(key);
